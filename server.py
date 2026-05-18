@@ -94,7 +94,7 @@ def get_room(room_id):
 
 def get_piece_font(size):
     if size not in _piece_font_cache:
-        _piece_font_cache[size] = pygame.font.SysFont("Apple Symbols", size)
+        _piece_font_cache[size] = pygame.font.SysFont("dejavusans", size)
     return _piece_font_cache[size]
 
 
