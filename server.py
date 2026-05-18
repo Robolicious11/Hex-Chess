@@ -17,6 +17,7 @@ app = Flask(__name__)
 ZOOM = 0.6
 DRAW_SCALE = 0.95
 WIDTH, HEIGHT = 700, 580
+FONT_PATH = "DejaVuSans.ttf"
 
 PIECE_SYMBOLS = {
     "white": {"king": "♔", "queen": "♕", "bishop": "♗", "knight": "♘", "pawn": "♙"},
@@ -26,7 +27,7 @@ PIECE_SYMBOLS = {
 pygame.init()
 #surface = pygame.display.set_mode((WIDTH, HEIGHT))
 surface = pygame.Surface((WIDTH, HEIGHT))
-label_font = pygame.font.SysFont("Arial", 10)
+label_font = pygame.font.Font(FONT_PATH, 10)
 _piece_font_cache = {}
 render_lock = threading.Lock()
 
@@ -91,7 +92,6 @@ def get_room(room_id):
 
 
 # --- Drawing helpers ---
-FONT_PATH = "DejaVuSans.ttf"
 
 def get_piece_font(size):
     if size not in _piece_font_cache:
