@@ -162,7 +162,7 @@ def render_room(room):
         fg = (255, 255, 255) if (in_check or game.turn == "black") else (0, 0, 0)
         turn_word = "White" if game.turn == "white" else "Black"
         label = f"{turn_word} is in CHECK!" if in_check else f"{turn_word}'s turn"
-        font = pygame.font.Font(FONT_PATH, 18, bold=True)
+        font = pygame.font.SysFont("dejavusans", 18, bold=True)
         box_w = 210 if in_check else 160
         pygame.draw.rect(surface, bg, (10, 10, box_w, 36), border_radius=8)
         pygame.draw.rect(surface, (0, 0, 0), (10, 10, box_w, 36), 2, border_radius=8)
@@ -188,7 +188,7 @@ def render_room(room):
             bar_x = WIDTH - bar_w - 10
             pygame.draw.rect(surface, t_color, (bar_x, 10, bar_w, 36), border_radius=8)
             pygame.draw.rect(surface, (0, 0, 0), (bar_x, 10, bar_w, 36), 2, border_radius=8)
-            t_font = pygame.font.Font(FONT_PATH, 20, bold=True)
+            t_font = pygame.font.SysFont("dejavusans", 20, bold=True)
             t_surf = t_font.render(timer_str, True, (255, 255, 255))
             surface.blit(t_surf, t_surf.get_rect(center=(bar_x + bar_w // 2, 28)))
 
