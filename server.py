@@ -91,10 +91,11 @@ def get_room(room_id):
 
 
 # --- Drawing helpers ---
+FONT_PATH = "DejaVuSans.ttf"
 
 def get_piece_font(size):
     if size not in _piece_font_cache:
-        _piece_font_cache[size] = pygame.font.SysFont("dejavusans", size)
+        _piece_font_cache[size] = pygame.font.Font(FONT_PATH, size)
     return _piece_font_cache[size]
 
 
