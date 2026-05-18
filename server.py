@@ -2,7 +2,7 @@ import os
 os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 
-import pygame, math, io, time, threading, uuid
+import pygame, math, io, time, threading, uuid, base64
 from flask import Flask, Response, request, jsonify, render_template_string, redirect
 from my_hexchess import Game
 
@@ -16,17 +16,20 @@ FONT_PATH = "DejaVuSans.ttf"
 pygame.init()
 surface = pygame.Surface((WIDTH, HEIGHT))
 
-label_font = pygame.font.Font(FONT_PATH, 14)
+label_font = pygame.font.Font(FONT_PATH, 13)
 _piece_font_cache = {}
+
 rooms = {}
 render_lock = threading.Lock()
 
 PIECE_SYMBOLS = {
-    "white": {"king":"♔","queen":"♕","bishop":"♗","knight":"♘","pawn":"♙"},
-    "black": {"king":"♚","queen":"♛","bishop":"♝","knight":"♞","pawn":"♟"}
+    "white": {"king": "♔","queen": "♕","bishop": "♗","knight": "♘","pawn": "♙"},
+    "black": {"king": "♚","queen": "♛","bishop": "♝","knight": "♞","pawn": "♟"}
 }
 
-# ✅ ROOM
+
+# ---------- ROOM ----------
+
 def make_room():
     return {
         "game": Game(size=4),
@@ -34,252 +37,234 @@ def make_room():
         "legal_moves": [],
         "last_move": None,
         "animation": None,
+        "players": {"white": None, "black": None},
         "history": []
     }
 
-def get_font(size):
+
+def font(size):
     if size not in _piece_font_cache:
         _piece_font_cache[size] = pygame.font.Font(FONT_PATH, size)
     return _piece_font_cache[size]
 
-# ✅ DRAW
+
+# ---------- DRAW ----------
+
 def draw_hex(x, y, size, color):
     pts = [(x + size*math.cos(math.radians(60*i)),
             y + size*math.sin(math.radians(60*i))) for i in range(6)]
     pygame.draw.polygon(surface, color, pts)
     pygame.draw.polygon(surface, (0,0,0), pts, 1)
 
+
 def render(room):
-    g = room["game"]
+    game = room["game"]
+    selected = room["selected"]
+    legal = room["legal_moves"]
+    last = room["last_move"]
 
     surface.fill((245,245,245))
 
-    for (q,r), piece in g.board.items():
-
-        x,y,tile = g.to_pixel(q,r,WIDTH,HEIGHT,zoom=ZOOM)
-        size = int(tile * DRAW_SCALE)
+    for (q,r), piece in game.board.items():
+        x,y,s = game.to_pixel(q,r,WIDTH,HEIGHT,zoom=ZOOM)
+        size = int(s*DRAW_SCALE)
 
         base = (200,200,200) if (q+r)%2==0 else (160,160,160)
-        color = base
+        col = base
 
-        if room["last_move"] and (q,r) in room["last_move"]:
-            color = (180,180,255)
-        if room["selected"] == (q,r):
-            color = (255,230,80)
-        elif (q,r) in room["legal_moves"]:
-            color = (140,240,140)
+        if last and (q,r) in last:
+            col = (180,180,255)
+        if selected==(q,r): col=(255,230,80)
+        elif (q,r) in legal: col=(140,240,140)
 
-        draw_hex(x, y, size, color)
+        draw_hex(x,y,size,col)
 
-        # ✅ PIECES
+        # piece
         if piece:
-            pf = get_font(int(size*1.3))
+            pf = font(int(size*1.3))
             sym = PIECE_SYMBOLS[piece.owner][piece.name]
-            txt = pf.render(sym, True, (0,0,0))
-            surface.blit(txt, txt.get_rect(center=(round(x),round(y))))
+            t = pf.render(sym, True, (20,20,20))
+            surface.blit(t, t.get_rect(center=(round(x),round(y))))
 
-        # ✅ LABELS
-        label = label_font.render(g.to_label(q,r), False, (70,70,70))
-        surface.blit(label, label.get_rect(center=(round(x), round(y+size*0.65))))
+        # label
+        text = label_font.render(game.to_label(q,r), False, (80,80,80))
+        surface.blit(text, text.get_rect(center=(round(x), round(y+size*0.65))))
 
-    # ✅ ANIMATION
+    # ---- animation ----
     anim = room["animation"]
     if anim:
-        t = (time.time() - anim["start"]) / 0.2
-
-        if t >= 1:
-            g.board[anim["to"]] = anim["piece"]
-            room["animation"] = None
+        t = (time.time()-anim["start"])/0.2
+        if t>=1:
+            game.board[anim["to"]] = anim["piece"]
+            room["animation"]=None
         else:
-            fx,fy,_ = g.to_pixel(*anim["from"],WIDTH,HEIGHT,zoom=ZOOM)
-            tx,ty,_ = g.to_pixel(*anim["to"],WIDTH,HEIGHT,zoom=ZOOM)
+            fx,fy,_=game.to_pixel(*anim["from"],WIDTH,HEIGHT,zoom=ZOOM)
+            tx,ty,_=game.to_pixel(*anim["to"],WIDTH,HEIGHT,zoom=ZOOM)
+            x = fx+(tx-fx)*t
+            y = fy+(ty-fy)*t
 
-            x = fx + (tx - fx) * t
-            y = fy + (ty - fy) * t
-
-            pf = get_font(50)
+            pf = font(50)
             sym = PIECE_SYMBOLS[anim["piece"].owner][anim["piece"].name]
+            t_surf = pf.render(sym, True, (0,0,0))
+            surface.blit(t_surf, t_surf.get_rect(center=(x,y)))
 
-            surface.blit(pf.render(sym, True, (0,0,0)), (x-25,y-25))
+    # ---- turn display ----
+    turn = game.turn.upper()
+    turn_text = label_font.render(f"{turn} TURN", False, (20,20,20))
+    surface.blit(turn_text, (10,10))
+
 
 def frame_bytes(room):
     with render_lock:
         render(room)
-        buf = io.BytesIO()
+        buf=io.BytesIO()
         pygame.image.save(surface, buf, "png")
         return buf.getvalue()
 
-# ✅ ROUTES
+
+# ---------- ROUTES ----------
 
 @app.route('/')
 def home():
     return render_template_string("""
     <style>
-    body{
-        background:#1a1a2e;
-        color:white;
-        text-align:center;
-        font-family:sans-serif;
-    }
-    button{
-        padding:14px 24px;
-        background:#3498db;
-        border:none;
-        border-radius:8px;
-        font-size:16px;
-        cursor:pointer;
-    }
-    button:hover{
-        background:#2980b9;
-    }
+    body {background:#1a1a2e;color:white;text-align:center;font-family:sans-serif;}
+    button {padding:12px 20px;background:#3498db;border:none;border-radius:8px;color:white;}
     </style>
-
     <h1>HEX CHESS</h1>
-
-    <form action="/new" method="POST">
-        <button type="submit">Create Game</button>
+    /new method="POST">
+        <button>Create Game</button>
     </form>
     """)
 
+
 @app.route('/new', methods=['POST'])
-def new_game():
+def new():
     rid = uuid.uuid4().hex[:8]
-    rooms[rid] = make_room()
+    rooms[rid]=make_room()
     return redirect(f"/game/{rid}")
+
 
 @app.route('/game/<rid>')
 def game_page(rid):
-
-    room = rooms.get(rid)
-    if not room:
-        return "Game not found", 404
-
     return render_template_string("""
     <style>
-    body{background:#1a1a2e;color:white;text-align:center;}
-    #board{border-radius:10px;box-shadow:0 0 40px rgba(0,0,0,.6);}
-    #history{
-        height:160px;
-        overflow:auto;
-        background:#16213e;
-        margin-top:10px;
-        padding:10px;
-        border-radius:6px;
-    }
+    body {background:#1a1a2e;color:white;text-align:center;}
+    #board {box-shadow:0 0 40px rgba(0,0,0,0.7);}
+    #history {height:150px;overflow:auto;background:#16213e;margin-top:10px;padding:10px;border-radius:6px;}
     </style>
 
     <h2>HEX CHESS</h2>
-
     <img id="board">
+
+    <div id="role"></div>
 
     <h3>Moves</h3>
     <div id="history"></div>
 
     <script>
-    const ROOM = "{{ rid }}";
-
-    const img = document.getElementById("board");
-    const hist = document.getElementById("history");
+    const ROOM="{{rid}}"
+    const img=document.getElementById("board")
+    const historyDiv=document.getElementById("history")
 
     function refresh(){
-        img.src = "/frame/" + ROOM + "?t=" + Date.now();
+        img.src="/frame/"+ROOM+"?t="+Date.now()
 
-        fetch("/state/" + ROOM)
+        fetch("/state/"+ROOM)
         .then(r=>r.json())
         .then(d=>{
-            hist.innerHTML = d.history.join("<br>");
-        });
+            historyDiv.innerHTML=d.history.join("<br>")
+        })
 
-        setTimeout(refresh, 120);
+        setTimeout(refresh,120)
     }
-    refresh();
 
-    let sx, sy;
+    refresh()
 
-    img.onmousedown = e => {
-        let r = img.getBoundingClientRect();
-        sx = e.clientX - r.left;
-        sy = e.clientY - r.top;
-    };
-
-    img.onmouseup = e => {
-        let r = img.getBoundingClientRect();
-
-        fetch("/drag/" + ROOM,{
+    img.onclick=(e)=>{
+        let r=img.getBoundingClientRect()
+        fetch("/click/"+ROOM,{
             method:"POST",
             headers:{"Content-Type":"application/json"},
             body:JSON.stringify({
-                x1:sx,y1:sy,
-                x2:e.clientX-r.left,y2:e.clientY-r.top
+                x:e.clientX-r.left,
+                y:e.clientY-r.top,
+                imgW:r.width,
+                imgH:r.height
             })
-        });
-    };
+        })
+    }
     </script>
-    """, rid=rid)
+    """,rid=rid)
+
 
 @app.route('/frame/<rid>')
 def frame(rid):
-    room = rooms.get(rid)
-    if not room:
-        return '',404
-    return Response(frame_bytes(room), mimetype='image/png')
+    return Response(frame_bytes(rooms[rid]), mimetype='image/png')
+
 
 @app.route('/state/<rid>')
 def state(rid):
-    room = rooms.get(rid)
-    if not room:
-        return jsonify({"history":[]})
-    return jsonify({"history": room["history"]})
+    room=rooms[rid]
+    return jsonify({"history":room["history"]})
 
-@app.route('/drag/<rid>', methods=['POST'])
-def drag(rid):
-    room = rooms.get(rid)
-    if not room:
-        return jsonify({"ok": False})
 
-    g = room["game"]
-    d = request.json
+@app.route('/click/<rid>', methods=['POST'])
+def click(rid):
+    room=rooms[rid]
+    g=room["game"]
 
-    try:
-        start = g.from_pixel(d["x1"], d["y1"], WIDTH, HEIGHT, zoom=ZOOM)
-        end   = g.from_pixel(d["x2"], d["y2"], WIDTH, HEIGHT, zoom=ZOOM)
-    except:
-        return jsonify({"ok": False})
+    user=request.remote_addr
 
-    if start not in g.board:
-        room["selected"] = None
-        room["legal_moves"] = []
-        return jsonify({"ok": True})
+    if room["players"]["white"] is None:
+        room["players"]["white"]=user
+    elif room["players"]["black"] is None and user!=room["players"]["white"]:
+        room["players"]["black"]=user
 
-    piece = g.board.get(start)
+    if room["players"][g.turn]!=user:
+        return jsonify({"ok":False})
+
+    d=request.json
+    mx,my=d["x"],d["y"]
+
+    q,r=g.from_pixel(mx,my,WIDTH,HEIGHT,zoom=ZOOM)
+
+    if (q,r) not in g.board:
+        room["selected"]=None
+        room["legal_moves"]=[]
+        return jsonify({"ok":True})
+
+    p=g.board.get((q,r))
 
     if room["selected"] is None:
-        if piece and piece.owner == g.turn:
-            room["selected"] = start
-            room["legal_moves"] = g.legal_moves(start)
+        if p and p.owner==g.turn:
+            room["selected"]=(q,r)
+            room["legal_moves"]=g.legal_moves((q,r))
     else:
-        if end in room["legal_moves"]:
-            src = room["selected"]
+        if (q,r) in room["legal_moves"]:
+            src=room["selected"]
 
-            room["animation"] = {
-                "from": src,
-                "to": end,
-                "piece": g.board[src],
-                "start": time.time()
+            room["animation"]={
+                "from":src,
+                "to":(q,r),
+                "piece":g.board[src],
+                "start":time.time()
             }
 
-            room["history"].append(f"{g.to_label(*src)}→{g.to_label(*end)}")
+            move=f"{g.to_label(*src)}→{g.to_label(q,r)}"
+            room["history"].append(move)
 
-            g.board[src] = None
-            g.turn = "black" if g.turn == "white" else "white"
-            room["last_move"] = (src, end)
+            g.board[src]=None
+            g.turn="black" if g.turn=="white" else "white"
+            room["last_move"]=(src,(q,r))
 
-        room["selected"] = None
-        room["legal_moves"] = []
+        room["selected"]=None
+        room["legal_moves"]=[]
 
-    return jsonify({"ok": True})
+    return jsonify({"ok":True})
 
-# ✅ RUN
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT",5000))
+
+# ---------- RUN ----------
+if __name__=="__main__":
+    port=int(os.environ.get("PORT",5000))
     app.run(host="0.0.0.0", port=port)
