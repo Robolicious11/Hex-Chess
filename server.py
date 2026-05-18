@@ -134,7 +134,7 @@ def render_room(room):
             t = pf.render(sym, True, (0, 0, 0))
             surface.blit(t, t.get_rect(center=(x, y)))
 
-        lt = label_font.render(game.to_label(q, r), True, (80, 80, 80))
+        lt = label_font.render(game.to_label(q, r), False, (80, 80, 80))
         surface.blit(lt, lt.get_rect(center=(x, y + hex_radius * 0.65)))
 
     winner = room.get("winner")
