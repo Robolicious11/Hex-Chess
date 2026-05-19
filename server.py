@@ -620,6 +620,8 @@ def click(room_id):
                     game.board[src]          = None
                     moving_piece.has_moved   = True
                     room["pending_promotion"] = (q, r)
+                    room["selected"] = None
+                    room["legal_moves"] = []
                     room["last_move"]        = {"from": src, "to": (q, r)}
                     record_move(room, color, "pawn", src, (q, r), cap_name)
                     click_event = "move"
@@ -628,6 +630,8 @@ def click(room_id):
                     game.move(src, (q, r))
                     record_move(room, color, moving_piece.name, src, (q, r), cap_name)
                     room["last_move"] = {"from": src, "to": (q, r)}
+                    room["selected"] = None
+                    room["legal_moves"] = []
                     apply_result(room, check_game_over(game))
                     click_event = compute_event(cap_name, game, room["winner"] is not None)
                     room["last_event"] = click_event
@@ -788,7 +792,7 @@ LANDING_HTML = r'''<!DOCTYPE html>
     <input type="hidden" name="ai" id="ai_hidden" value="0">
     <div class="card">
       <h1>HEX CHESS</h1>
-      <p class="subtitle">Strategy on six sides</p>
+      <p class="subtitle">A Loridanshof original</p>
 
       <div class="mode-row">
         <div class="mode-btn active" id="btn-multi" onclick="setMode(0)">
@@ -808,9 +812,9 @@ LANDING_HTML = r'''<!DOCTYPE html>
         <div class="field">
           <label for="difficulty">AI DIFFICULTY</label>
           <select name="difficulty" id="difficulty">
-            <option value="easy">Easy — plays randomly</option>
-            <option value="medium" selected>Medium — greedy, prefers captures</option>
-            <option value="hard">Hard — thinks 2 moves ahead</option>
+            <option value="easy">Plays randomly</option>
+            <option value="medium" selected>Greedy, prefers captures</option>
+            <option value="hard">Thinks 2 moves ahead - niveautje Robbert</option>
           </select>
         </div>
       </div>
