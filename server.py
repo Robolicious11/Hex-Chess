@@ -808,7 +808,7 @@ LANDING_HTML = r'''<!DOCTYPE html>
       </div>
 
       <div id="ai-fields" style="display:none;">
-        <div class="ai-note">De AI moet nog verder geschreven worden, maar met paarden op steroïden is winnen al moeilijk zat.</div>
+        <div class="ai-note">Laat maar weten als de AI sterker moet</div>
         <div class="field">
           <label for="difficulty">AI DIFFICULTY</label>
           <select name="difficulty" id="difficulty">
