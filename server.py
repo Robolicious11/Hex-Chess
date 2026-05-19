@@ -792,7 +792,7 @@ LANDING_HTML = r'''<!DOCTYPE html>
     <input type="hidden" name="ai" id="ai_hidden" value="0">
     <div class="card">
       <h1>HEX CHESS</h1>
-      <p class="subtitle">A Loridanshof original</p>
+      <p class="subtitle">a Loridanshof original</p>
 
       <div class="mode-row">
         <div class="mode-btn active" id="btn-multi" onclick="setMode(0)">
@@ -808,13 +808,13 @@ LANDING_HTML = r'''<!DOCTYPE html>
       </div>
 
       <div id="ai-fields" style="display:none;">
-        <div class="ai-note">The AI looks ahead and prefers captures — good luck!</div>
+        <div class="ai-note">De AI moet nog verder geschreven worden, maar met paarden op steroïden is winnen al moeilijk zat.</div>
         <div class="field">
           <label for="difficulty">AI DIFFICULTY</label>
           <select name="difficulty" id="difficulty">
             <option value="easy">Plays randomly</option>
             <option value="medium" selected>Greedy, prefers captures</option>
-            <option value="hard">Thinks 2 moves ahead - niveautje Robbert</option>
+            <option value="hard">Thinks 2 moves ahead</option>
           </select>
         </div>
       </div>
