@@ -1995,10 +1995,15 @@ GAME_HTML = r'''<!DOCTYPE html>
       const fg = isWhite ? PIECE_FG.white : PIECE_FG.black;
       const ol = isWhite ? PIECE_OL.white : PIECE_OL.black;
       const rect = img.getBoundingClientRect();
+      // sx/sy convert NATIVE (700x580) coordinates to DISPLAYED pixels —
+      // i.e. displayed = native * sx. (The hover overlay above instead
+      // defines its scale as native/displayed and divides; same result,
+      // opposite convention — don't mix the two without also flipping
+      // multiply<->divide, which is exactly the bug this fixes.)
       const sx = rect.width / IMG_W, sy = rect.height / IMG_H;
       const start = boardToScreen(fromQR[0], fromQR[1]);
       const end   = boardToScreen(toQR[0], toQR[1]);
-      const fontSize = Math.max(10, (start.ts * 1.5) / sy);
+      const fontSize = Math.max(10, start.ts * 1.5 * sy);
       const duration = 180;
       const t0 = performance.now();
 
@@ -2017,15 +2022,15 @@ GAME_HTML = r'''<!DOCTYPE html>
         animCtx.textBaseline = 'middle';
 
         animCtx.fillStyle = 'rgba(0,0,0,0.31)';
-        animCtx.fillText(sym, (nx + 2) / sx, (ny + 3) / sy);
+        animCtx.fillText(sym, (nx + 2) * sx, (ny + 3) * sy);
 
         animCtx.fillStyle = ol;
         for (const [dx, dy] of OUTLINE_OFFSETS) {
-          animCtx.fillText(sym, (nx + dx) / sx, (ny + dy) / sy);
+          animCtx.fillText(sym, (nx + dx) * sx, (ny + dy) * sy);
         }
 
         animCtx.fillStyle = fg;
-        animCtx.fillText(sym, nx / sx, ny / sy);
+        animCtx.fillText(sym, nx * sx, ny * sy);
 
         if (t < 1) {
           animFrame = requestAnimationFrame(frame);
