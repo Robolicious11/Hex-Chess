@@ -4,6 +4,8 @@ Chess adapted to a hexagonal board — a hex grid instead of a square grid chang
 every piece moves, most notably the knight, which uses a custom "two-step-then-turn"
 hex adaptation instead of the familiar orthogonal L-shape.
 
+**Play now:** https://hex-chess-c2fm.onrender.com — or run it yourself, see below.
+
 ## Features
 
 - Full legal-move generation for king, queen, bishop, knight, and pawn on a hex board,
