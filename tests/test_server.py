@@ -78,6 +78,22 @@ def test_resign_rejected_once_game_over():
     assert room["win_reason"] == "resignation"
 
 
+def test_resign_rejected_on_behalf_of_ai():
+    client = make_client()
+    room_id = create_room(client, "198.51.100.6", ai="1", difficulty="easy")
+
+    resp = client.post(f"/resign/{room_id}", json={"color": "black"})  # black == AI here
+    assert resp.status_code == 400
+
+    room = server.rooms[room_id]
+    assert room["winner"] is None             # AI cannot be made to "resign"
+
+    # The human (white) can still resign normally.
+    resp2 = client.post(f"/resign/{room_id}", json={"color": "white"})
+    assert resp2.status_code == 200
+    assert server.rooms[room_id]["winner"] == "black"
+
+
 def test_draw_offer_then_accept_ends_in_draw():
     client = make_client()
     room_id = create_room(client, "198.51.100.3")

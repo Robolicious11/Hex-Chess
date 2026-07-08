@@ -883,6 +883,8 @@ def resign(room_id):
         room["last_activity"] = time.time()
         if room["winner"] or room["pending_promotion"]:
             return jsonify({'ok': False, 'error': 'game already over'}), 400
+        if room["ai"] and color == room["ai_color"]:
+            return jsonify({'ok': False, 'error': 'cannot resign on behalf of the AI'}), 400
         room["winner"]      = "black" if color == "white" else "white"
         room["win_reason"]  = "resignation"
         room["clock_since"] = None
@@ -1289,6 +1291,7 @@ GAME_HTML = r'''<!DOCTYPE html>
 
   <script>
     const ROOM = "{{ room_id }}";
+    const AI_MODE = {{ 'true' if ai_mode else 'false' }};
     document.getElementById('share-url').textContent = window.location.href;
     document.getElementById('copy-btn').addEventListener('click', function() {
       navigator.clipboard.writeText(window.location.href).then(() => {
@@ -1477,6 +1480,14 @@ GAME_HTML = r'''<!DOCTYPE html>
     }
 
     document.getElementById('resign-btn').addEventListener('click', () => {
+      // In vs-AI games there's only one human, always playing White, so
+      // there's no ambiguity to ask about (and the server rejects
+      // resigning as the AI's color regardless).
+      if (AI_MODE) {
+        fetch('/resign/'+ROOM, {method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({color:'white'})});
+        return;
+      }
       askColor('RESIGN', 'Which side is resigning?', async (color) => {
         await fetch('/resign/'+ROOM, {method:'POST', headers:{'Content-Type':'application/json'},
           body:JSON.stringify({color})});
