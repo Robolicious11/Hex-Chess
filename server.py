@@ -1816,6 +1816,7 @@ GAME_HTML = r'''<!DOCTYPE html>
     const ROOM = "{{ room_id }}";
     const AI_MODE = {{ 'true' if ai_mode else 'false' }};
     const SPECTATE = {{ 'true' if spectate else 'false' }};
+    let gameOver = false;  // updated from /state polling; blocks hover/click once true
 
     const themeToggle = document.getElementById('theme-toggle');
     function updateThemeToggle() {
@@ -1979,9 +1980,20 @@ GAME_HTML = r'''<!DOCTYPE html>
     }
 
     let animFrame = null;
+    // Same fixed piece colors render_room/draw_piece use server-side —
+    // these stay constant across every board theme, so hardcoding them
+    // here is always correct regardless of which theme the room uses.
+    const WHITE_SYMS = new Set(['♔','♕','♗','♘','♙']);
+    const PIECE_FG = { white: 'rgb(248,242,226)', black: 'rgb(28,22,16)' };
+    const PIECE_OL = { white: 'rgb(42,35,24)',    black: 'rgb(205,196,178)' };
+    const OUTLINE_OFFSETS = [[-1,0],[1,0],[0,-1],[0,1]];
+
     function animateMove(fromQR, toQR, sym) {
       if (!sym) return;
       if (animFrame) cancelAnimationFrame(animFrame);
+      const isWhite = WHITE_SYMS.has(sym);
+      const fg = isWhite ? PIECE_FG.white : PIECE_FG.black;
+      const ol = isWhite ? PIECE_OL.white : PIECE_OL.black;
       const rect = img.getBoundingClientRect();
       const sx = rect.width / IMG_W, sy = rect.height / IMG_H;
       const start = boardToScreen(fromQR[0], fromQR[1]);
@@ -1993,17 +2005,27 @@ GAME_HTML = r'''<!DOCTYPE html>
       function frame(now) {
         const t = Math.min(1, (now - t0) / duration);
         const ease = 1 - Math.pow(1 - t, 3);
-        const x = (start.x + (end.x - start.x) * ease) / sx;
-        const y = (start.y + (end.y - start.y) * ease) / sy;
+        // Interpolate in native board-pixel space, matching how the hover
+        // overlay positions things, then scale to the displayed size —
+        // keeps the shadow/outline offsets consistent at any zoom level.
+        const nx = start.x + (end.x - start.x) * ease;
+        const ny = start.y + (end.y - start.y) * ease;
 
         animCtx.clearRect(0, 0, moveAnim.width, moveAnim.height);
         animCtx.font = fontSize + 'px "Segoe UI", system-ui, sans-serif';
         animCtx.textAlign = 'center';
         animCtx.textBaseline = 'middle';
-        animCtx.fillStyle = 'rgba(0,0,0,0.35)';
-        animCtx.fillText(sym, x + 1.5, y + 2.5);
-        animCtx.fillStyle = '#fff';
-        animCtx.fillText(sym, x, y);
+
+        animCtx.fillStyle = 'rgba(0,0,0,0.31)';
+        animCtx.fillText(sym, (nx + 2) / sx, (ny + 3) / sy);
+
+        animCtx.fillStyle = ol;
+        for (const [dx, dy] of OUTLINE_OFFSETS) {
+          animCtx.fillText(sym, (nx + dx) / sx, (ny + dy) / sy);
+        }
+
+        animCtx.fillStyle = fg;
+        animCtx.fillText(sym, nx / sx, ny / sy);
 
         if (t < 1) {
           animFrame = requestAnimationFrame(frame);
@@ -2016,9 +2038,10 @@ GAME_HTML = r'''<!DOCTYPE html>
     }
     img.addEventListener('mousemove', function(e) {
       syncOverlay();
+      ctx.clearRect(0,0,overlay.width,overlay.height);
+      if (gameOver) return;  // don't hover-highlight over the game-over panel
       const rect=img.getBoundingClientRect(), sx=IMG_W/rect.width, sy=IMG_H/rect.height;
       const {q,r}=pixelToHex((e.clientX-rect.left)*sx,(e.clientY-rect.top)*sy);
-      ctx.clearRect(0,0,overlay.width,overlay.height);
       if(!onBoard(q,r)) return;
       const h=hexToPixel(q,r); drawHoverHex(h.x/sx, h.y/sy, h.ts*0.95/sx);
     });
@@ -2048,6 +2071,7 @@ GAME_HTML = r'''<!DOCTYPE html>
     async function checkState() {
       try {
         const d = await (await fetch('/state/'+ROOM+'?t='+Date.now())).json();
+        gameOver = !!d.winner;
         // Play sound for AI moves (or any server-side event)
         if (d.event_seq !== lastEventSeq && lastEventSeq !== -1) {
           playSound(d.last_event);
@@ -2256,7 +2280,7 @@ GAME_HTML = r'''<!DOCTYPE html>
     // ================================================================
     if (!SPECTATE) {
       img.addEventListener('click', async function(e) {
-        if(promoActive) return;
+        if(promoActive || gameOver) return;
         ensureAudio();  // ensure audio context created on user gesture
         const rect=img.getBoundingClientRect();
         const resp=await fetch('/click/'+ROOM,{
