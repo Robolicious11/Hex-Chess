@@ -1247,6 +1247,13 @@ LANDING_HTML = r'''<!DOCTYPE html>
       --hex-glow-1:rgba(232,223,200,0.035); --hex-glow-2:rgba(74,144,217,0.05);
       --preview-border:rgba(255,255,255,0.08);
       --icon-btn-bg:rgba(255,255,255,0.08); --icon-btn-border:rgba(255,255,255,0.16);
+
+      /* Spacing / radius / font-size scale — not theme-dependent, so
+         defined once here rather than repeated in the light override. */
+      --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:24px;
+      --radius-xs:6px; --radius-sm:8px; --radius-md:10px; --radius-lg:12px;
+      --radius-xl:16px; --radius-2xl:20px; --radius-pill:999px;
+      --fs-btn:0.88rem; --fs-btn-sm:0.78rem; --fs-card-title:1.2rem;
     }
     :root[data-theme="light"] {
       --bg-1:#eef1f7; --bg-2:#dde3ee;
@@ -1284,8 +1291,8 @@ LANDING_HTML = r'''<!DOCTYPE html>
     body::after  { bottom:-300px; right:-280px; background:var(--hex-glow-2); }
 
     #theme-toggle { position:fixed; top:16px; right:16px; z-index:2;
-      padding:7px 11px; background:var(--icon-btn-bg); color:var(--text);
-      border:1px solid var(--icon-btn-border); border-radius:6px; cursor:pointer;
+      padding:var(--space-2) var(--space-3); background:var(--icon-btn-bg); color:var(--text);
+      border:1px solid var(--icon-btn-border); border-radius:var(--radius-xs); cursor:pointer;
       font-size:0.9rem; transition:background 0.18s, border-color 0.18s; }
     #theme-toggle:hover { background:var(--surface-hover-border); }
 
@@ -1295,7 +1302,7 @@ LANDING_HTML = r'''<!DOCTYPE html>
     }
     #landing-preview { flex:0 0 320px; display:flex; justify-content:center; }
     #landing-preview img {
-      width:100%; max-width:320px; border-radius:16px;
+      width:100%; max-width:320px; border-radius:var(--radius-xl);
       border:1px solid var(--preview-border); box-shadow:0 20px 50px rgba(0,0,0,0.5);
     }
     @media (max-width: 820px) {
@@ -1305,7 +1312,7 @@ LANDING_HTML = r'''<!DOCTYPE html>
 
     .card {
       background:var(--surface); border:1px solid var(--surface-border);
-      border-radius:20px; padding:40px 48px 36px; width:min(440px, 92vw);
+      border-radius:var(--radius-2xl); padding:40px 48px 36px; width:min(440px, 92vw);
       display:flex; flex-direction:column; align-items:center;
       box-shadow:0 24px 60px rgba(0,0,0,0.5);
     }
@@ -1320,7 +1327,7 @@ LANDING_HTML = r'''<!DOCTYPE html>
     .mode-row { display:flex; gap:12px; width:100%; margin-bottom:20px; }
     .mode-btn {
       flex:1; padding:16px 10px; border:2px solid var(--mode-border);
-      background:var(--mode-bg); border-radius:12px; color:var(--mode-color);
+      background:var(--mode-bg); border-radius:var(--radius-lg); color:var(--mode-color);
       cursor:pointer; transition:all 0.18s; text-align:center; user-select:none;
     }
     .mode-btn .icon { font-size:1.8rem; display:block; margin-bottom:6px; }
@@ -1330,12 +1337,21 @@ LANDING_HTML = r'''<!DOCTYPE html>
     .mode-btn.active { border-color:var(--accent-bright); background:var(--accent-soft-bg); color:var(--text); }
     .mode-btn.active .desc { color:var(--accent-soft-text); }
 
+    .section-divider {
+      width:100%; display:flex; align-items:center; gap:10px;
+      margin:6px 0 16px; color:var(--text-faint); font-size:0.68rem;
+      letter-spacing:2px; text-transform:uppercase;
+    }
+    .section-divider::before, .section-divider::after {
+      content:''; flex:1; height:1px; background:var(--surface-border);
+    }
+
     .field { width:100%; margin-bottom:18px; }
     .field label { display:block; font-size:0.75rem; letter-spacing:1.5px;
                    color:var(--text-faint); margin-bottom:8px; }
     .field select {
       width:100%; padding:11px 14px; background:var(--field-bg);
-      color:var(--text); border:1px solid var(--field-border); border-radius:8px;
+      color:var(--text); border:1px solid var(--field-border); border-radius:var(--radius-sm);
       font-size:0.95rem; cursor:pointer; outline:none; appearance:none;
       background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23888' d='M6 8L0 0h12z'/%3E%3C/svg%3E");
       background-repeat:no-repeat; background-position:right 14px center;
@@ -1346,13 +1362,13 @@ LANDING_HTML = r'''<!DOCTYPE html>
     .ai-note {
       font-size:0.78rem; color:var(--ai-note-text); margin-bottom:18px; width:100%;
       padding:8px 12px; background:var(--ai-note-bg);
-      border-radius:6px; border-left:3px solid var(--accent-bright);
+      border-radius:var(--radius-xs); border-left:3px solid var(--accent-bright);
     }
 
     .create-btn {
       width:100%; padding:14px; font-size:1rem; font-weight:700; letter-spacing:2px;
       background:linear-gradient(135deg,var(--btn-grad-1),var(--btn-grad-2)); color:#fff; border:none;
-      border-radius:10px; cursor:pointer; transition:all 0.18s;
+      border-radius:var(--radius-md); cursor:pointer; transition:all 0.18s;
       box-shadow:0 4px 18px rgba(42,100,180,0.45);
     }
     .create-btn:hover {
@@ -1392,15 +1408,6 @@ LANDING_HTML = r'''<!DOCTYPE html>
           </div>
         </div>
 
-        <div class="field">
-          <label for="theme">BOARD THEME</label>
-          <select name="theme" id="theme">
-            <option value="classic" selected>Classic — tan &amp; brown</option>
-            <option value="ocean">Ocean — blue &amp; gray</option>
-            <option value="forest">Forest — green</option>
-          </select>
-        </div>
-
         <div id="ai-fields" style="display:none;">
           <div class="field">
             <label for="difficulty">AI DIFFICULTY</label>
@@ -1410,6 +1417,17 @@ LANDING_HTML = r'''<!DOCTYPE html>
               <option value="hard">Searches several moves ahead</option>
             </select>
           </div>
+        </div>
+
+        <div class="section-divider">Match Settings</div>
+
+        <div class="field">
+          <label for="theme">BOARD THEME</label>
+          <select name="theme" id="theme">
+            <option value="classic" selected>Classic — tan &amp; brown</option>
+            <option value="ocean">Ocean — blue &amp; gray</option>
+            <option value="forest">Forest — green</option>
+          </select>
         </div>
 
         <div class="field">
@@ -1508,6 +1526,13 @@ GAME_HTML = r'''<!DOCTYPE html>
       --choice-cancel-text:#8a96a8; --choice-cancel-border:#445; --choice-cancel-hover:#cdd;
       --promo-label:#89aacf;
       --draw-banner-bg:rgba(58,112,184,0.18); --draw-banner-border:rgba(74,144,217,0.5); --draw-banner-text:#dce8f5;
+
+      /* Spacing / radius / font-size scale — not theme-dependent, so
+         defined once here rather than repeated in the light override. */
+      --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:24px;
+      --radius-xs:6px; --radius-sm:8px; --radius-md:10px; --radius-lg:12px;
+      --radius-xl:16px; --radius-2xl:20px; --radius-pill:999px;
+      --fs-btn:0.88rem; --fs-btn-sm:0.78rem; --fs-card-title:1.2rem;
     }
     :root[data-theme="light"] {
       --bg-1:#eef1f7; --bg-2:#dde3ee;
@@ -1547,40 +1572,40 @@ GAME_HTML = r'''<!DOCTYPE html>
     h1 { color:var(--heading); font-size:1.25rem; letter-spacing:4px; margin-bottom:8px; }
 
     #theme-toggle { position:fixed; top:16px; right:16px; z-index:50;
-      padding:7px 11px; background:var(--icon-btn-bg); color:var(--text);
-      border:1px solid var(--icon-btn-border); border-radius:6px; cursor:pointer;
+      padding:var(--space-2) var(--space-3); background:var(--icon-btn-bg); color:var(--text);
+      border:1px solid var(--icon-btn-border); border-radius:var(--radius-xs); cursor:pointer;
       font-size:0.9rem; transition:background 0.18s, border-color 0.18s; }
     #theme-toggle:hover { background:var(--icon-btn-hover-bg); }
 
     #share-box { display:flex; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap;
                  justify-content:center; max-width:100%; }
     #share-url { background:var(--share-url-bg); color:var(--share-url-text);
-                 border:1px solid var(--share-url-border); border-radius:999px;
-                 padding:7px 14px; font-size:0.78rem; font-family:monospace;
+                 border:1px solid var(--share-url-border); border-radius:var(--radius-pill);
+                 padding:var(--space-2) var(--space-3); font-size:var(--fs-btn-sm); font-family:monospace;
                  width:300px; max-width:60vw; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
     #share-url::before { content:'🔗 '; }
-    #copy-btn { padding:7px 16px; background:var(--accent); color:#fff; border:none;
-                border-radius:999px; cursor:pointer; font-size:0.78rem; transition:background 0.18s; }
+    #copy-btn { padding:var(--space-2) var(--space-4); background:var(--accent); color:#fff; border:none;
+                border-radius:var(--radius-pill); cursor:pointer; font-size:var(--fs-btn-sm); transition:background 0.18s; }
     #copy-btn:hover { background:var(--accent-hover); }
-    .icon-btn { padding:6px 12px; background:var(--icon-btn-bg); color:var(--ghost-text);
-                border:1px solid var(--icon-btn-border); border-radius:6px; cursor:pointer;
-                font-size:0.78rem; transition:background 0.18s, border-color 0.18s, transform 0.12s; }
+    .icon-btn { padding:var(--space-2) var(--space-3); background:var(--icon-btn-bg); color:var(--ghost-text);
+                border:1px solid var(--icon-btn-border); border-radius:var(--radius-xs); cursor:pointer;
+                font-size:var(--fs-btn-sm); transition:background 0.18s, border-color 0.18s, transform 0.12s; }
     .icon-btn:hover  { background:var(--icon-btn-hover-bg); }
     .icon-btn.active { background:var(--accent-soft-bg); border-color:var(--accent-bright); color:var(--text); }
-    #ai-badge { color:var(--ai-badge-text); font-size:0.78rem; letter-spacing:1px; margin-bottom:10px;
+    #ai-badge { color:var(--ai-badge-text); font-size:var(--fs-btn-sm); letter-spacing:1px; margin-bottom:10px;
                 background:var(--ai-badge-bg); border:1px solid var(--ai-badge-border);
-                border-radius:999px; padding:6px 16px; display:inline-block; }
+                border-radius:var(--radius-pill); padding:var(--space-2) var(--space-4); display:inline-block; }
 
     #game-area { display:flex; align-items:flex-start; gap:14px; max-width:100%; }
     #game-wrap { position:relative; display:inline-block; line-height:0; }
-    #game { cursor:pointer; border-radius:10px; display:block;
+    #game { cursor:pointer; border-radius:var(--radius-md); display:block;
             box-shadow:0 8px 40px rgba(0,0,0,0.6), 0 0 0 1px var(--board-shadow-ring);
             max-width:100%; max-height:74vh; }
-    #overlay, #move-anim { position:absolute; top:0; left:0; pointer-events:none; border-radius:10px; }
+    #overlay, #move-anim { position:absolute; top:0; left:0; pointer-events:none; border-radius:var(--radius-md); }
 
     #history-panel {
       width:200px; min-width:200px; background:var(--surface);
-      border:1px solid var(--surface-border); border-radius:10px;
+      border:1px solid var(--surface-border); border-radius:var(--radius-md);
       display:flex; flex-direction:column; max-height:74vh; overflow:hidden;
     }
 
@@ -1617,7 +1642,7 @@ GAME_HTML = r'''<!DOCTYPE html>
 
     #bottom-row { display:flex; align-items:center; justify-content:center; gap:12px;
                   margin-top:10px; flex-wrap:wrap; }
-    #bottom-row button { padding:9px 22px; border-radius:8px; font-size:0.88rem;
+    #bottom-row button { padding:var(--space-2) var(--space-5); border-radius:var(--radius-sm); font-size:var(--fs-btn);
                  cursor:pointer; letter-spacing:0.5px; font-weight:600;
                  transition:background 0.18s, border-color 0.18s, opacity 0.18s, transform 0.12s; }
     #bottom-row button:disabled { opacity:0.4; cursor:default; }
@@ -1645,32 +1670,32 @@ GAME_HTML = r'''<!DOCTYPE html>
     #promo-overlay.active, #choice-overlay.active {
                      opacity:1; visibility:visible; pointer-events:auto;
                      transition: opacity 0.2s ease, visibility 0s linear 0s; }
-    #promo-box, #choice-box { background:var(--dialog-bg); border:2px solid var(--accent); border-radius:16px;
+    #promo-box, #choice-box { background:var(--dialog-bg); border:2px solid var(--accent); border-radius:var(--radius-xl);
                  padding:30px 38px; text-align:center; color:var(--text);
                  box-shadow:0 20px 60px rgba(0,0,0,0.6); max-width:92vw;
                  transform:scale(0.94); transition:transform 0.2s ease; }
     #promo-overlay.active #promo-box, #choice-overlay.active #choice-box { transform:scale(1); }
-    #promo-box h2, #choice-box h2 { font-size:1.2rem; letter-spacing:3px; margin-bottom:6px; }
+    #promo-box h2, #choice-box h2 { font-size:var(--fs-card-title); letter-spacing:3px; margin-bottom:6px; }
     #promo-box p, #choice-box p  { color:var(--dialog-text-dim); margin-bottom:22px; font-size:0.88rem; }
     .promo-btn { padding:12px 20px; margin:0 6px; font-size:1.7rem;
                  background:var(--accent-soft-bg); color:#fff; border:2px solid var(--accent);
-                 border-radius:10px; cursor:pointer; transition:all 0.15s; line-height:1; }
+                 border-radius:var(--radius-md); cursor:pointer; transition:all 0.15s; line-height:1; }
     .promo-btn:hover { background:var(--accent-bright); transform:scale(1.1); }
     .promo-label { display:block; font-size:0.65rem; margin-top:4px;
                    letter-spacing:1px; color:var(--promo-label); }
 
     .choice-btn { padding:12px 22px; margin:6px; font-size:0.95rem; font-weight:600;
                  background:var(--accent-soft-bg); color:#fff; border:2px solid var(--accent);
-                 border-radius:10px; cursor:pointer; transition:all 0.15s; }
+                 border-radius:var(--radius-md); cursor:pointer; transition:all 0.15s; }
     .choice-btn:hover { background:var(--accent-bright); }
     .choice-cancel { padding:10px 18px; margin:10px 6px 0; font-size:0.82rem;
-                 background:transparent; color:var(--choice-cancel-text); border:1px solid var(--choice-cancel-border); border-radius:8px;
+                 background:transparent; color:var(--choice-cancel-text); border:1px solid var(--choice-cancel-border); border-radius:var(--radius-sm);
                  cursor:pointer; }
     .choice-cancel:hover { color:var(--choice-cancel-hover); }
 
     #draw-banner { display:flex; align-items:center; gap:10px; justify-content:center;
                    background:var(--draw-banner-bg); border:1px solid var(--draw-banner-border);
-                   border-radius:8px; color:var(--draw-banner-text); font-size:0.85rem; flex-wrap:wrap;
+                   border-radius:var(--radius-sm); color:var(--draw-banner-text); font-size:0.85rem; flex-wrap:wrap;
                    opacity:0; visibility:hidden; pointer-events:none;
                    max-height:0; padding:0 16px; margin-bottom:0; overflow:hidden;
                    transition: opacity 0.2s ease, max-height 0.25s ease,
@@ -1681,7 +1706,7 @@ GAME_HTML = r'''<!DOCTYPE html>
                    transition: opacity 0.2s ease, max-height 0.25s ease,
                                padding 0.25s ease, margin-bottom 0.25s ease,
                                visibility 0s linear 0s; }
-    .draw-accept, .draw-decline { padding:5px 14px; border:none; border-radius:6px;
+    .draw-accept, .draw-decline { padding:5px 14px; border:none; border-radius:var(--radius-xs);
                    font-size:0.78rem; cursor:pointer; color:#fff; }
     .draw-accept, .draw-decline { transition:background 0.18s, transform 0.12s; }
     .draw-accept { background:#2a8a4a; }
