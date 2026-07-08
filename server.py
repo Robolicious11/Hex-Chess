@@ -37,6 +37,9 @@ WHITE_PIECE_OL  = (42,  35,  24)
 BLACK_PIECE_FG  = (28,  22,  16)
 BLACK_PIECE_OL  = (205, 196, 178)
 
+ROOM_INACTIVITY_TIMEOUT = 2 * 60 * 60   # purge rooms idle longer than this
+REAPER_SWEEP_INTERVAL   = 5 * 60        # how often the reaper checks
+
 pygame.init()
 surface     = pygame.Surface((WIDTH, HEIGHT))
 label_font  = pygame.font.Font(FONT_PATH, 10)
@@ -74,12 +77,35 @@ def make_room(time_limit=300, ai=False, ai_difficulty="medium"):
         "event_seq":         0,
         "lock":              threading.Lock(),
         "created":           now,
+        "last_activity":     now,
     }
 
 
 def get_room(room_id):
     with rooms_lock:
         return rooms.get(room_id)
+
+
+def reap_inactive_rooms():
+    """Background sweep that purges rooms nobody has touched in a while,
+    so a publicly-reachable /new endpoint can't grow the process forever."""
+    while True:
+        time.sleep(REAPER_SWEEP_INTERVAL)
+        now = time.time()
+        with rooms_lock:
+            snapshot = list(rooms.items())
+        stale_ids = []
+        for room_id, room in snapshot:
+            with room["lock"]:
+                if now - room["last_activity"] > ROOM_INACTIVITY_TIMEOUT:
+                    stale_ids.append(room_id)
+        if stale_ids:
+            with rooms_lock:
+                for room_id in stale_ids:
+                    rooms.pop(room_id, None)
+
+
+threading.Thread(target=reap_inactive_rooms, daemon=True).start()
 
 
 def get_time_remaining(room, color):
@@ -685,6 +711,7 @@ def click(room_id):
     click_event  = None
 
     with room["lock"]:
+        room["last_activity"] = time.time()
         check_timer_expiry(room)
         if room["winner"] or room["pending_promotion"]:
             return jsonify({'ok': True})
@@ -763,6 +790,7 @@ def reset(room_id):
     if room is None:
         return jsonify({'ok': False}), 404
     with room["lock"]:
+        room["last_activity"]     = time.time()
         init = room["init_time"]
         room["game"]              = Game(size=BOARD_SIZE)
         room["selected"]          = None
@@ -793,6 +821,7 @@ def promote(room_id):
     ai_triggered = False
 
     with room["lock"]:
+        room["last_activity"] = time.time()
         pos = room["pending_promotion"]
         if pos is None:
             return jsonify({'ok': False, 'error': 'no promotion pending'}), 400
@@ -1281,4 +1310,5 @@ GAME_HTML = r'''<!DOCTYPE html>
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, threaded=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, threaded=True)
