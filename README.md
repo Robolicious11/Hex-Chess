@@ -13,12 +13,15 @@ hex adaptation instead of the familiar orthogonal L-shape.
 - Checkmate and stalemate detection.
 - En passant, including the "pinned pawn" edge case where taking en passant would
   expose your own king to check.
-- Draw detection: the 50-move rule and threefold repetition.
+- Draw detection: the 50-move rule and threefold repetition, plus resignation and
+  draw-by-agreement (browser client).
 - Pawn promotion.
 - Two ways to play: a local desktop client and a browser client (see below).
 - An AI opponent with three difficulty levels (random / greedy / iterative-deepening
   alpha-beta search).
-- Per-player chess clocks and a move history panel (browser client).
+- Per-player chess clocks with an optional time increment (bonus seconds per move), and
+  a move history panel (browser client).
+- Mobile-friendly responsive layout (browser client).
 
 ## Two ways to play
 
@@ -95,6 +98,12 @@ Squares are labeled like standard chess (e.g. `D3`), just on a hexagonal grid. B
 clients are mouse-driven: click to select a piece, click a highlighted square to move
 there. The desktop client uses keyboard shortcuts for promotion (Q/B/N) and reset (R);
 the browser client uses on-page buttons for promotion and a "Reset Game" button.
+
+The browser client also has "Resign" and "Offer Draw" buttons. Since there's no player
+login, either button asks which color it's acting for — a draw offer then shows an
+Accept/Decline banner that either player's tab can respond to (the app has no identity
+system at all; every action already works this way, including moves). "Offer Draw" is
+hidden in vs-AI games, since the AI has no logic to evaluate an offer.
 
 ## Testing
 

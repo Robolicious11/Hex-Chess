@@ -53,7 +53,7 @@ rooms_lock  = threading.Lock()
 # Room helpers
 # ---------------------------------------------------------------------------
 
-def make_room(time_limit=300, ai=False, ai_difficulty="medium"):
+def make_room(time_limit=300, ai=False, ai_difficulty="medium", increment=0):
     now = time.time()
     tl  = float(time_limit) if time_limit > 0 else None
     return {
@@ -62,12 +62,14 @@ def make_room(time_limit=300, ai=False, ai_difficulty="medium"):
         "legal_moves":       [],
         "winner":            None,
         "win_reason":        None,
+        "draw_offered_by":   None,
         "pending_promotion": None,
         "last_move":         None,
         "history":           [],
         "white_time":        tl,
         "black_time":        tl,
         "init_time":         tl,
+        "increment":         float(increment) if increment else 0.0,
         "clock_since":       now if tl else None,
         "ai":                ai,
         "ai_color":          "black" if ai else None,
@@ -164,7 +166,7 @@ def deduct_clock(room):
     elapsed = time.time() - since
     key = "white_time" if room["game"].turn == "white" else "black_time"
     if room[key] is not None:
-        room[key] = max(0.0, room[key] - elapsed)
+        room[key] = max(0.0, room[key] - elapsed) + (room.get("increment") or 0)
     room["clock_since"] = time.time()
 
 
@@ -605,14 +607,20 @@ def render_room(room):
         surface.blit(ov, (0, 0))
         big = pygame.font.Font(FONT_PATH, 38)
         sub = pygame.font.Font(FONT_PATH, 19)
-        if winner == "draw" and room.get("win_reason") == "draw":
+        win_reason = room.get("win_reason")
+        if winner == "draw" and win_reason == "draw":
             title = big.render("Draw — repetition / 50-move rule", True, (200, 200, 255))
+        elif winner == "draw" and win_reason == "agreement":
+            title = big.render("Draw by agreement", True, (200, 200, 255))
         elif winner == "draw":
             title = big.render("Stalemate — Draw!", True, (200, 200, 255))
-        elif room.get("win_reason") == "timeout":
+        elif win_reason == "timeout":
             loser = "black" if winner == "white" else "white"
             sym   = "♔" if winner == "white" else "♚"
             title = big.render(f"{sym}  {loser.capitalize()} ran out of time!", True, (255, 218, 48))
+        elif win_reason == "resignation":
+            sym   = "♔" if winner == "white" else "♚"
+            title = big.render(f"{sym}  {winner.capitalize()} wins by resignation!", True, (255, 218, 48))
         else:
             sym   = "♔" if winner == "white" else "♚"
             title = big.render(f"{sym}  {winner.capitalize()} wins by checkmate!", True, (255, 218, 48))
@@ -647,9 +655,11 @@ def render_room(room):
             cx    = WIDTH - cw - 10
             b_rem = get_time_remaining(room, "black")
             w_rem = get_time_remaining(room, "white")
-            draw_clock_badge(cx, 10,               cw, ch, "BLACK",
+            inc   = room.get("increment") or 0
+            inc_suffix = f" +{int(inc)}" if inc else ""
+            draw_clock_badge(cx, 10,               cw, ch, "BLACK" + inc_suffix,
                              fmt_time(b_rem), game.turn == "black", b_rem, init, cfont, sfont)
-            draw_clock_badge(cx, HEIGHT - ch - 10, cw, ch, "WHITE",
+            draw_clock_badge(cx, HEIGHT - ch - 10, cw, ch, "WHITE" + inc_suffix,
                              fmt_time(w_rem), game.turn == "white", w_rem, init, cfont, sfont)
 
 
@@ -683,12 +693,19 @@ def new_game():
         time_limit = int(request.form.get('time_limit', 300))
     except (ValueError, TypeError):
         time_limit = 300
+    try:
+        increment = int(request.form.get('increment', 0))
+    except (ValueError, TypeError):
+        increment = 0
+    if increment not in (0, 2, 5, 10):
+        increment = 0
     ai         = request.form.get('ai', '0') == '1'
     difficulty = request.form.get('difficulty', 'medium')
     if difficulty not in ('easy', 'medium', 'hard'):
         difficulty = 'medium'
     with rooms_lock:
-        rooms[room_id] = make_room(time_limit=time_limit, ai=ai, ai_difficulty=difficulty)
+        rooms[room_id] = make_room(time_limit=time_limit, ai=ai, ai_difficulty=difficulty,
+                                    increment=increment)
     return redirect(url_for('game_page', room_id=room_id))
 
 
@@ -733,6 +750,8 @@ def state(room_id):
             'turn':              room["game"].turn,
             'event_seq':         room["event_seq"],
             'last_event':        room["last_event"],
+            'winner':            room["winner"] is not None,
+            'draw_offered_by':   room["draw_offered_by"],
         })
 
 
@@ -838,6 +857,7 @@ def reset(room_id):
         room["legal_moves"]       = []
         room["winner"]            = None
         room["win_reason"]        = None
+        room["draw_offered_by"]   = None
         room["pending_promotion"] = None
         room["last_move"]         = None
         room["history"]           = []
@@ -847,6 +867,70 @@ def reset(room_id):
         room["last_event"]        = None
         room["ai_thinking"]       = False
         room["event_seq"]        += 1
+    return jsonify({'ok': True})
+
+
+@app.route('/resign/<room_id>', methods=['POST'])
+def resign(room_id):
+    room = get_room(room_id)
+    if room is None:
+        return jsonify({'ok': False}), 404
+    color = (request.json or {}).get('color')
+    if color not in ('white', 'black'):
+        return jsonify({'ok': False, 'error': 'invalid color'}), 400
+
+    with room["lock"]:
+        room["last_activity"] = time.time()
+        if room["winner"] or room["pending_promotion"]:
+            return jsonify({'ok': False, 'error': 'game already over'}), 400
+        room["winner"]      = "black" if color == "white" else "white"
+        room["win_reason"]  = "resignation"
+        room["clock_since"] = None
+        room["last_event"]  = "checkmate"
+        room["event_seq"]  += 1
+    return jsonify({'ok': True})
+
+
+@app.route('/draw_offer/<room_id>', methods=['POST'])
+def draw_offer(room_id):
+    room = get_room(room_id)
+    if room is None:
+        return jsonify({'ok': False}), 404
+    color = (request.json or {}).get('color')
+    if color not in ('white', 'black'):
+        return jsonify({'ok': False, 'error': 'invalid color'}), 400
+
+    with room["lock"]:
+        room["last_activity"] = time.time()
+        if room["ai"]:
+            return jsonify({'ok': False, 'error': 'AI opponent cannot respond to draw offers'}), 400
+        if room["winner"] or room["pending_promotion"]:
+            return jsonify({'ok': False, 'error': 'game already over'}), 400
+        if room["draw_offered_by"]:
+            return jsonify({'ok': False, 'error': 'a draw offer is already pending'}), 400
+        room["draw_offered_by"] = color
+        room["event_seq"]      += 1
+    return jsonify({'ok': True})
+
+
+@app.route('/draw_respond/<room_id>', methods=['POST'])
+def draw_respond(room_id):
+    room = get_room(room_id)
+    if room is None:
+        return jsonify({'ok': False}), 404
+    accept = bool((request.json or {}).get('accept'))
+
+    with room["lock"]:
+        room["last_activity"] = time.time()
+        if not room["draw_offered_by"]:
+            return jsonify({'ok': False, 'error': 'no draw offer pending'}), 400
+        room["draw_offered_by"] = None
+        if accept:
+            room["winner"]      = "draw"
+            room["win_reason"]  = "agreement"
+            room["clock_since"] = None
+            room["last_event"]  = "checkmate"
+        room["event_seq"] += 1
     return jsonify({'ok': True})
 
 
@@ -896,6 +980,7 @@ LANDING_HTML = r'''<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Hex Chess</title>
   <style>
     *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
@@ -906,7 +991,7 @@ LANDING_HTML = r'''<!DOCTYPE html>
     }
     .card {
       background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1);
-      border-radius:20px; padding:40px 48px 36px; width:440px;
+      border-radius:20px; padding:40px 48px 36px; width:min(440px, 92vw);
       display:flex; flex-direction:column; align-items:center;
       box-shadow:0 24px 60px rgba(0,0,0,0.5);
     }
@@ -1004,6 +1089,16 @@ LANDING_HTML = r'''<!DOCTYPE html>
         </select>
       </div>
 
+      <div class="field">
+        <label for="increment">INCREMENT (BONUS PER MOVE)</label>
+        <select name="increment" id="increment">
+          <option value="0" selected>None</option>
+          <option value="2">+2 seconds</option>
+          <option value="5">+5 seconds</option>
+          <option value="10">+10 seconds</option>
+        </select>
+      </div>
+
       <button type="submit" class="create-btn">CREATE GAME</button>
     </div>
   </form>
@@ -1023,6 +1118,7 @@ GAME_HTML = r'''<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Hex Chess</title>
   <style>
     *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
@@ -1032,17 +1128,18 @@ GAME_HTML = r'''<!DOCTYPE html>
       min-height:100vh; padding:16px; font-family:'Segoe UI', system-ui, sans-serif;
     }
     h1 { color:#e0d8c8; font-size:1.25rem; letter-spacing:4px; margin-bottom:8px; }
-    #share-box { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+    #share-box { display:flex; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap;
+                 justify-content:center; max-width:100%; }
     #share-url { background:rgba(255,255,255,0.06); color:#8ac0e0;
                  border:1px solid rgba(74,144,217,0.4); border-radius:6px;
                  padding:6px 12px; font-size:0.78rem; font-family:monospace;
-                 width:300px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+                 width:300px; max-width:60vw; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
     #copy-btn { padding:6px 14px; background:#2a70b8; color:#fff; border:none;
                 border-radius:6px; cursor:pointer; font-size:0.78rem; transition:background 0.18s; }
     #copy-btn:hover { background:#3a80c8; }
     #ai-badge { color:#6aacda; font-size:0.78rem; letter-spacing:1px; margin-bottom:6px; }
 
-    #game-area { display:flex; align-items:flex-start; gap:14px; }
+    #game-area { display:flex; align-items:flex-start; gap:14px; max-width:100%; }
     #game-wrap { position:relative; display:inline-block; line-height:0; }
     #game { cursor:pointer; border-radius:10px; display:block;
             box-shadow:0 8px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.07);
@@ -1053,6 +1150,11 @@ GAME_HTML = r'''<!DOCTYPE html>
       width:200px; min-width:200px; background:rgba(255,255,255,0.04);
       border:1px solid rgba(255,255,255,0.09); border-radius:10px;
       display:flex; flex-direction:column; max-height:74vh; overflow:hidden;
+    }
+
+    @media (max-width: 720px) {
+      #game-area { flex-direction:column; align-items:center; }
+      #history-panel { width:100%; min-width:0; max-height:28vh; }
     }
     #history-title { padding:10px 14px 8px; font-size:0.72rem; letter-spacing:2px;
                      color:#5a6878; border-bottom:1px solid rgba(255,255,255,0.07); flex-shrink:0; }
@@ -1073,27 +1175,57 @@ GAME_HTML = r'''<!DOCTYPE html>
                    border-radius:3px; padding:1px 4px; }
     .history-empty { color:#3a4858; font-size:0.78rem; text-align:center; padding:20px 14px; }
 
-    #bottom-row { display:flex; align-items:center; justify-content:center; gap:16px; margin-top:10px; }
+    #bottom-row { display:flex; align-items:center; justify-content:center; gap:16px;
+                  margin-top:10px; flex-wrap:wrap; }
     #reset-btn { padding:8px 24px; background:#a82828; color:#fff; border:none;
                  border-radius:8px; font-size:0.88rem; cursor:pointer;
                  letter-spacing:1px; transition:background 0.18s; }
     #reset-btn:hover { background:#c03030; }
+    #resign-btn, #draw-btn { padding:8px 24px; color:#fff; border:none;
+                 border-radius:8px; font-size:0.88rem; cursor:pointer;
+                 letter-spacing:1px; transition:background 0.18s, opacity 0.18s; }
+    #resign-btn { background:#5a5a5a; }
+    #resign-btn:hover { background:#6c6c6c; }
+    #draw-btn { background:#3a5a80; }
+    #draw-btn:hover { background:#4a6f9a; }
+    #resign-btn:disabled, #draw-btn:disabled { opacity:0.4; cursor:default; }
 
-    #promo-overlay { display:none; position:fixed; inset:0;
+    #promo-overlay, #choice-overlay { display:none; position:fixed; inset:0;
                      background:rgba(0,0,0,0.78); z-index:100;
                      align-items:center; justify-content:center; }
-    #promo-overlay.active { display:flex; }
-    #promo-box { background:#1a2338; border:2px solid #3a70b8; border-radius:16px;
+    #promo-overlay.active, #choice-overlay.active { display:flex; }
+    #promo-box, #choice-box { background:#1a2338; border:2px solid #3a70b8; border-radius:16px;
                  padding:30px 38px; text-align:center; color:#eee;
-                 box-shadow:0 20px 60px rgba(0,0,0,0.6); }
-    #promo-box h2 { font-size:1.2rem; letter-spacing:3px; margin-bottom:6px; }
-    #promo-box p  { color:#7a90a8; margin-bottom:22px; font-size:0.88rem; }
+                 box-shadow:0 20px 60px rgba(0,0,0,0.6); max-width:92vw; }
+    #promo-box h2, #choice-box h2 { font-size:1.2rem; letter-spacing:3px; margin-bottom:6px; }
+    #promo-box p, #choice-box p  { color:#7a90a8; margin-bottom:22px; font-size:0.88rem; }
     .promo-btn { padding:12px 20px; margin:0 6px; font-size:1.7rem;
                  background:rgba(58,112,184,0.3); color:#fff; border:2px solid #3a70b8;
                  border-radius:10px; cursor:pointer; transition:all 0.15s; line-height:1; }
     .promo-btn:hover { background:rgba(58,112,184,0.7); transform:scale(1.1); }
     .promo-label { display:block; font-size:0.65rem; margin-top:4px;
                    letter-spacing:1px; color:#89aacf; }
+
+    .choice-btn { padding:12px 22px; margin:6px; font-size:0.95rem; font-weight:600;
+                 background:rgba(58,112,184,0.3); color:#fff; border:2px solid #3a70b8;
+                 border-radius:10px; cursor:pointer; transition:all 0.15s; }
+    .choice-btn:hover { background:rgba(58,112,184,0.7); }
+    .choice-cancel { padding:10px 18px; margin:10px 6px 0; font-size:0.82rem;
+                 background:transparent; color:#8a96a8; border:1px solid #445; border-radius:8px;
+                 cursor:pointer; }
+    .choice-cancel:hover { color:#cdd; }
+
+    #draw-banner { display:none; align-items:center; gap:10px; justify-content:center;
+                   background:rgba(58,112,184,0.18); border:1px solid rgba(74,144,217,0.5);
+                   border-radius:8px; padding:8px 16px; margin-bottom:10px; color:#dce8f5;
+                   font-size:0.85rem; flex-wrap:wrap; }
+    #draw-banner.active { display:flex; }
+    .draw-accept, .draw-decline { padding:5px 14px; border:none; border-radius:6px;
+                   font-size:0.78rem; cursor:pointer; color:#fff; }
+    .draw-accept { background:#2a8a4a; }
+    .draw-accept:hover { background:#34a458; }
+    .draw-decline { background:#8a2a2a; }
+    .draw-decline:hover { background:#a43434; }
   </style>
 </head>
 <body>
@@ -1106,6 +1238,12 @@ GAME_HTML = r'''<!DOCTYPE html>
   <div id="share-box">
     <span id="share-url"></span>
     <button id="copy-btn">Copy Link</button>
+  </div>
+
+  <div id="draw-banner">
+    <span id="draw-banner-text"></span>
+    <button class="draw-accept" id="draw-accept-btn">Accept</button>
+    <button class="draw-decline" id="draw-decline-btn">Decline</button>
   </div>
 
   <div id="game-area">
@@ -1122,6 +1260,10 @@ GAME_HTML = r'''<!DOCTYPE html>
   </div>
 
   <div id="bottom-row">
+    <button id="resign-btn">Resign</button>
+    {% if not ai_mode %}
+    <button id="draw-btn">Offer Draw</button>
+    {% endif %}
     <button id="reset-btn">Reset Game</button>
   </div>
 
@@ -1130,6 +1272,18 @@ GAME_HTML = r'''<!DOCTYPE html>
       <h2>PAWN PROMOTION</h2>
       <p>Choose a piece to promote to:</p>
       <div id="promo-buttons"></div>
+    </div>
+  </div>
+
+  <div id="choice-overlay">
+    <div id="choice-box">
+      <h2 id="choice-title">CHOOSE A SIDE</h2>
+      <p id="choice-subtitle"></p>
+      <div>
+        <button class="choice-btn" id="choice-white-btn">White</button>
+        <button class="choice-btn" id="choice-black-btn">Black</button>
+      </div>
+      <div><button class="choice-cancel" id="choice-cancel-btn">Cancel</button></div>
     </div>
   </div>
 
@@ -1278,6 +1432,22 @@ GAME_HTML = r'''<!DOCTYPE html>
           promoActive=false;
           document.getElementById('promo-overlay').classList.remove('active');
         }
+
+        // Disable Resign/Offer Draw once the game is over
+        document.getElementById('resign-btn').disabled = !!d.winner;
+        const drawBtn = document.getElementById('draw-btn');
+        if (drawBtn) drawBtn.disabled = !!d.winner;
+
+        // Draw-offer banner (shown to both tabs; either side can respond,
+        // same trust model the rest of this shared-room app already uses)
+        const banner = document.getElementById('draw-banner');
+        if (d.draw_offered_by && !d.winner) {
+          banner.classList.add('active');
+          document.getElementById('draw-banner-text').textContent =
+            d.draw_offered_by.charAt(0).toUpperCase() + d.draw_offered_by.slice(1) + ' offers a draw';
+        } else {
+          banner.classList.remove('active');
+        }
       } catch(e) {}
     }
     // Poll more frequently to catch AI events promptly
@@ -1288,6 +1458,49 @@ GAME_HTML = r'''<!DOCTYPE html>
       document.getElementById('promo-overlay').classList.remove('active');
       await fetch('/promote/'+ROOM,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({piece})});
     }
+
+    // ================================================================
+    // RESIGN / OFFER DRAW
+    // ================================================================
+    // Generic "which side?" popup, reused for both Resign and Offer Draw —
+    // this app has no player identity/login, so the acting client just
+    // states which color it's acting for (same trust model as moves).
+    function askColor(title, subtitle, onChoose) {
+      document.getElementById('choice-title').textContent = title;
+      document.getElementById('choice-subtitle').textContent = subtitle;
+      const overlay = document.getElementById('choice-overlay');
+      overlay.classList.add('active');
+      const cleanup = () => overlay.classList.remove('active');
+      document.getElementById('choice-white-btn').onclick = () => { cleanup(); onChoose('white'); };
+      document.getElementById('choice-black-btn').onclick = () => { cleanup(); onChoose('black'); };
+      document.getElementById('choice-cancel-btn').onclick = cleanup;
+    }
+
+    document.getElementById('resign-btn').addEventListener('click', () => {
+      askColor('RESIGN', 'Which side is resigning?', async (color) => {
+        await fetch('/resign/'+ROOM, {method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({color})});
+      });
+    });
+
+    const drawBtnEl = document.getElementById('draw-btn');
+    if (drawBtnEl) {
+      drawBtnEl.addEventListener('click', () => {
+        askColor('OFFER DRAW', 'Which side is offering the draw?', async (color) => {
+          await fetch('/draw_offer/'+ROOM, {method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({color})});
+        });
+      });
+    }
+
+    document.getElementById('draw-accept-btn').addEventListener('click', async () => {
+      await fetch('/draw_respond/'+ROOM, {method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({accept:true})});
+    });
+    document.getElementById('draw-decline-btn').addEventListener('click', async () => {
+      await fetch('/draw_respond/'+ROOM, {method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({accept:false})});
+    });
 
     // ================================================================
     // HISTORY POLLING
@@ -1327,6 +1540,7 @@ GAME_HTML = r'''<!DOCTYPE html>
     document.getElementById('reset-btn').addEventListener('click',()=>{
       promoActive=false;
       document.getElementById('promo-overlay').classList.remove('active');
+      document.getElementById('draw-banner').classList.remove('active');
       fetch('/reset/'+ROOM,{method:'POST'});
     });
 
