@@ -25,6 +25,17 @@ def create_room(client, ip, **form):
     return resp.headers["Location"].rsplit("/", 1)[-1]
 
 
+def pixel_for(label, flip=False):
+    """Pixel coordinates for a board label, matching exactly how the real
+    client computes them (and how render_room places a flipped piece)."""
+    g = server.Game(size=server.BOARD_SIZE)
+    q, r = g.from_label(label)
+    if flip:
+        q, r = -q, -r
+    x, y, _ = g.to_pixel(q, r, server.WIDTH, server.HEIGHT, zoom=server.ZOOM)
+    return x, y
+
+
 def test_new_game_rate_limit_blocks_after_threshold():
     server._new_room_hits.clear()
     client = make_client()
@@ -140,3 +151,106 @@ def test_deduct_clock_adds_increment_after_time_spent():
 
     # 100 - 10 (elapsed) + 5 (increment) = 95, with slack for real test runtime.
     assert 94.5 <= room["white_time"] <= 95.5
+
+
+def test_click_with_flip_maps_back_to_true_board_square():
+    client = make_client()
+    room_id = create_room(client, "198.51.100.7")
+
+    x, y = pixel_for("C2", flip=True)
+    resp = client.post(f"/click/{room_id}", json={
+        "x": x, "y": y, "imgW": server.WIDTH, "imgH": server.HEIGHT, "flip": True,
+    })
+    assert resp.status_code == 200
+    assert resp.get_json()["event"] == "select"
+
+    room = server.rooms[room_id]
+    assert room["selected"] == room["game"].from_label("C2")
+
+
+def test_frame_renders_with_flip_enabled():
+    client = make_client()
+    room_id = create_room(client, "198.51.100.8")
+
+    resp = client.get(f"/frame/{room_id}?flip=1")
+    assert resp.status_code == 200
+    assert resp.mimetype == "image/png"
+    assert resp.data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_undo_reverts_last_move_in_2p_room():
+    client = make_client()
+    room_id = create_room(client, "198.51.100.9")
+
+    x1, y1 = pixel_for("C2")
+    x2, y2 = pixel_for("C4")
+    client.post(f"/click/{room_id}", json={"x": x1, "y": y1, "imgW": server.WIDTH, "imgH": server.HEIGHT})
+    move_resp = client.post(f"/click/{room_id}", json={"x": x2, "y": y2, "imgW": server.WIDTH, "imgH": server.HEIGHT})
+    assert move_resp.get_json()["event"] == "move"
+
+    room = server.rooms[room_id]
+    assert len(room["history"]) == 1
+    assert room["game"].turn == "black"
+
+    undo_resp = client.post(f"/undo/{room_id}")
+    assert undo_resp.status_code == 200
+
+    room = server.rooms[room_id]
+    assert len(room["history"]) == 0
+    assert room["game"].turn == "white"
+    c2, c4 = room["game"].from_label("C2"), room["game"].from_label("C4")
+    assert room["game"].board[c2] is not None and room["game"].board[c2].name == "pawn"
+    assert room["game"].board[c4] is None
+
+
+def test_undo_rejected_when_nothing_to_undo():
+    client = make_client()
+    room_id = create_room(client, "198.51.100.10")
+
+    resp = client.post(f"/undo/{room_id}")
+    assert resp.status_code == 400
+
+
+def test_undo_rejected_while_ai_thinking():
+    client = make_client()
+    room_id = create_room(client, "198.51.100.11", ai="1", difficulty="easy")
+
+    room = server.rooms[room_id]
+    room["undo_stack"].append(server.snapshot_room_state(room))  # pretend a move happened
+    room["ai_thinking"] = True
+
+    resp = client.post(f"/undo/{room_id}")
+    assert resp.status_code == 400
+    assert len(room["undo_stack"]) == 1   # untouched
+
+
+def test_undo_pops_two_plies_in_ai_room():
+    client = make_client()
+    room_id = create_room(client, "198.51.100.12", ai="1", difficulty="easy")
+
+    room = server.rooms[room_id]
+    game = room["game"]
+
+    room["undo_stack"].append(server.snapshot_room_state(room))
+    w_src = game.from_label("C2")
+    w_dst = game.legal_moves(w_src)[0]
+    game.move(w_src, w_dst)
+    server.record_move(room, "white", "pawn", w_src, w_dst)
+
+    room["undo_stack"].append(server.snapshot_room_state(room))
+    b_src = next(pos for pos, p in game.board.items() if p and p.owner == "black" and p.name == "pawn")
+    b_dst = game.legal_moves(b_src)[0]
+    game.move(b_src, b_dst)
+    server.record_move(room, "black", "pawn", b_src, b_dst)
+
+    assert len(room["history"]) == 2
+    assert game.turn == "white"
+
+    resp = client.post(f"/undo/{room_id}")
+    assert resp.status_code == 200
+
+    room = server.rooms[room_id]
+    assert len(room["history"]) == 0
+    assert room["game"].turn == "white"
+    assert room["game"].board[w_src] is not None and room["game"].board[w_src].name == "pawn"
+    assert room["game"].board[w_dst] is None

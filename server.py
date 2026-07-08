@@ -80,7 +80,39 @@ def make_room(time_limit=300, ai=False, ai_difficulty="medium", increment=0):
         "lock":              threading.Lock(),
         "created":           now,
         "last_activity":     now,
+        "undo_stack":        [],
     }
+
+
+def snapshot_room_state(room):
+    """Capture everything a move can mutate, so a later undo can fully
+    restore the room to exactly how it was before that move."""
+    return {
+        "game":            copy.deepcopy(room["game"]),
+        "white_time":      room["white_time"],
+        "black_time":      room["black_time"],
+        "clock_since":     room["clock_since"],
+        "winner":          room["winner"],
+        "win_reason":      room["win_reason"],
+        "last_move":       room["last_move"],
+        "history":         list(room["history"]),
+        "draw_offered_by": room["draw_offered_by"],
+    }
+
+
+def restore_room_state(room, snap):
+    room["game"]              = snap["game"]
+    room["white_time"]        = snap["white_time"]
+    room["black_time"]        = snap["black_time"]
+    room["clock_since"]       = snap["clock_since"]
+    room["winner"]            = snap["winner"]
+    room["win_reason"]        = snap["win_reason"]
+    room["last_move"]         = snap["last_move"]
+    room["history"]           = snap["history"]
+    room["draw_offered_by"]   = snap["draw_offered_by"]
+    room["selected"]          = None
+    room["legal_moves"]       = []
+    room["pending_promotion"] = None
 
 
 def get_room(room_id):
@@ -469,6 +501,7 @@ def trigger_ai_move(room_id):
             is_promo  = (moving_piece.name == "pawn"
                          and game.is_promotion_square(dst, moving_piece.owner))
 
+            room["undo_stack"].append(snapshot_room_state(room))
             deduct_clock(room)
 
             if is_promo:
@@ -548,7 +581,7 @@ def draw_clock_badge(x, y, w, h, label, time_str, is_active, rem, init, cfont, s
                  cfont.render(time_str, True, fg).get_rect(midbottom=(x + w // 2, y + h - 3)))
 
 
-def render_room(room):
+def render_room(room, flip=False):
     game      = room["game"]
     selected  = room["selected"]
     legal_set = set(room["legal_moves"])
@@ -567,7 +600,12 @@ def render_room(room):
     surface.fill(BOARD_BG)
 
     for (q, r), piece in game.board.items():
-        x, y, ts = game.to_pixel(q, r, WIDTH, HEIGHT, zoom=ZOOM)
+        # Flip is a purely visual, per-viewer rotation: draw the true square
+        # (q, r) at the pixel position of its 180-degree-rotated counterpart,
+        # while every lookup below (highlight, label, piece) still keys off
+        # the real board coordinate.
+        pq, pr = (-q, -r) if flip else (q, r)
+        x, y, ts = game.to_pixel(pq, pr, WIDTH, HEIGHT, zoom=ZOOM)
         hr = int(ts * DRAW_SCALE)
 
         if selected == (q, r):
@@ -663,11 +701,11 @@ def render_room(room):
                              fmt_time(w_rem), game.turn == "white", w_rem, init, cfont, sfont)
 
 
-def get_frame_bytes(room):
+def get_frame_bytes(room, flip=False):
     with render_lock:
         with room["lock"]:
             check_timer_expiry(room)
-            render_room(room)
+            render_room(room, flip=flip)
         buf = io.BytesIO()
         pygame.image.save(surface, buf, "frame.png")
         buf.seek(0)
@@ -726,7 +764,8 @@ def frame(room_id):
     room = get_room(room_id)
     if room is None:
         return '', 404
-    return Response(get_frame_bytes(room), mimetype='image/png',
+    flip = request.args.get('flip') == '1'
+    return Response(get_frame_bytes(room, flip=flip), mimetype='image/png',
                     headers={'Cache-Control': 'no-store'})
 
 
@@ -766,6 +805,7 @@ def click(room_id):
     img_h = data.get('imgH', HEIGHT)
     mx    = int(data['x'] * WIDTH  / img_w)
     my    = int(data['y'] * HEIGHT / img_h)
+    flip  = bool(data.get('flip', False))
 
     ai_triggered = False
     click_event  = None
@@ -781,6 +821,8 @@ def click(room_id):
             return jsonify({'ok': True})
 
         q, r = game.from_pixel(mx, my, WIDTH, HEIGHT, zoom=ZOOM)
+        if flip:
+            q, r = -q, -r
         if (q, r) not in game.board:
             room["selected"] = None
             room["legal_moves"] = []
@@ -802,6 +844,7 @@ def click(room_id):
                 color        = game.turn
                 is_promo     = (moving_piece.name == "pawn"
                                 and game.is_promotion_square((q, r), moving_piece.owner))
+                room["undo_stack"].append(snapshot_room_state(room))
                 if is_promo:
                     deduct_clock(room)
                     game.board[(q, r)]       = moving_piece
@@ -866,7 +909,39 @@ def reset(room_id):
         room["clock_since"]       = time.time() if init else None
         room["last_event"]        = None
         room["ai_thinking"]       = False
+        room["undo_stack"]        = []
         room["event_seq"]        += 1
+    return jsonify({'ok': True})
+
+
+@app.route('/undo/<room_id>', methods=['POST'])
+def undo(room_id):
+    room = get_room(room_id)
+    if room is None:
+        return jsonify({'ok': False}), 404
+
+    with room["lock"]:
+        room["last_activity"] = time.time()
+        if room["pending_promotion"]:
+            return jsonify({'ok': False, 'error': 'cannot undo during pending promotion'}), 400
+        if room["ai_thinking"]:
+            return jsonify({'ok': False, 'error': 'AI is thinking'}), 400
+        if not room["undo_stack"]:
+            return jsonify({'ok': False, 'error': 'nothing to undo'}), 400
+
+        # In vs-AI rooms, undo reverts both the AI's reply and the human's
+        # move that provoked it, so one click gives back "my move" as a
+        # human would expect. In 2P rooms it reverts just the last move,
+        # consistent with how resign/draw already treat either side's tab
+        # as equally trusted to act (there is no player identity here).
+        ply_count = 2 if room["ai"] else 1
+        ply_count = min(ply_count, len(room["undo_stack"]))
+        snap = None
+        for _ in range(ply_count):
+            snap = room["undo_stack"].pop()
+        restore_room_state(room, snap)
+        room["last_event"] = "move"
+        room["event_seq"] += 1
     return jsonify({'ok': True})
 
 
@@ -1139,6 +1214,11 @@ GAME_HTML = r'''<!DOCTYPE html>
     #copy-btn { padding:6px 14px; background:#2a70b8; color:#fff; border:none;
                 border-radius:6px; cursor:pointer; font-size:0.78rem; transition:background 0.18s; }
     #copy-btn:hover { background:#3a80c8; }
+    .icon-btn { padding:6px 12px; background:rgba(255,255,255,0.08); color:#cdd8e5;
+                border:1px solid rgba(255,255,255,0.16); border-radius:6px; cursor:pointer;
+                font-size:0.78rem; transition:background 0.18s, border-color 0.18s; }
+    .icon-btn:hover  { background:rgba(255,255,255,0.18); }
+    .icon-btn.active { background:rgba(74,144,217,0.35); border-color:#4a90d9; color:#fff; }
     #ai-badge { color:#6aacda; font-size:0.78rem; letter-spacing:1px; margin-bottom:6px; }
 
     #game-area { display:flex; align-items:flex-start; gap:14px; max-width:100%; }
@@ -1183,13 +1263,15 @@ GAME_HTML = r'''<!DOCTYPE html>
                  border-radius:8px; font-size:0.88rem; cursor:pointer;
                  letter-spacing:1px; transition:background 0.18s; }
     #reset-btn:hover { background:#c03030; }
-    #resign-btn, #draw-btn { padding:8px 24px; color:#fff; border:none;
+    #resign-btn, #draw-btn, #undo-btn { padding:8px 24px; color:#fff; border:none;
                  border-radius:8px; font-size:0.88rem; cursor:pointer;
                  letter-spacing:1px; transition:background 0.18s, opacity 0.18s; }
     #resign-btn { background:#5a5a5a; }
     #resign-btn:hover { background:#6c6c6c; }
     #draw-btn { background:#3a5a80; }
     #draw-btn:hover { background:#4a6f9a; }
+    #undo-btn { background:#5a6a3a; }
+    #undo-btn:hover { background:#6f8248; }
     #resign-btn:disabled, #draw-btn:disabled { opacity:0.4; cursor:default; }
 
     #promo-overlay, #choice-overlay { display:none; position:fixed; inset:0;
@@ -1240,6 +1322,8 @@ GAME_HTML = r'''<!DOCTYPE html>
   <div id="share-box">
     <span id="share-url"></span>
     <button id="copy-btn">Copy Link</button>
+    <button id="flip-btn" class="icon-btn" title="Flip board">⇅ Flip</button>
+    <button id="mute-btn" class="icon-btn" title="Mute sounds">🔊</button>
   </div>
 
   <div id="draw-banner">
@@ -1266,6 +1350,7 @@ GAME_HTML = r'''<!DOCTYPE html>
     {% if not ai_mode %}
     <button id="draw-btn">Offer Draw</button>
     {% endif %}
+    <button id="undo-btn">Undo</button>
     <button id="reset-btn">Reset Game</button>
   </div>
 
@@ -1301,8 +1386,24 @@ GAME_HTML = r'''<!DOCTYPE html>
     });
 
     // ================================================================
+    // FLIP BOARD (per-viewer only — never sent to the other player,
+    // just changes how this browser fetches/interprets frames)
+    // ================================================================
+    let flipped = localStorage.getItem('hexchess_flip_'+ROOM) === '1';
+    const flipBtn = document.getElementById('flip-btn');
+    flipBtn.classList.toggle('active', flipped);
+    flipBtn.addEventListener('click', () => {
+      flipped = !flipped;
+      localStorage.setItem('hexchess_flip_'+ROOM, flipped ? '1' : '0');
+      flipBtn.classList.toggle('active', flipped);
+      // No need to force a re-fetch — the frame poll below already runs
+      // every ~80ms and will pick up the new flip state on its next tick.
+    });
+
+    // ================================================================
     // SOUND ENGINE (Web Audio API — fully procedural, no files needed)
     // ================================================================
+    let muted = localStorage.getItem('hexchess_muted') === '1';
     const AC = window.AudioContext || window.webkitAudioContext;
     let audioCtx = null;
     function ensureAudio() {
@@ -1310,6 +1411,7 @@ GAME_HTML = r'''<!DOCTYPE html>
       return audioCtx;
     }
     function tone(freq, type, dur, vol, freqEnd) {
+      if (muted) return;
       const ctx = ensureAudio(); if (!ctx) return;
       const osc = ctx.createOscillator(), g = ctx.createGain();
       osc.connect(g); g.connect(ctx.destination);
@@ -1346,6 +1448,18 @@ GAME_HTML = r'''<!DOCTYPE html>
       else if (evt === 'checkmate') playCheckmate();
       else if (evt === 'timeout')   playTimeout();
     }
+
+    const muteBtn = document.getElementById('mute-btn');
+    function updateMuteBtn() {
+      muteBtn.textContent = muted ? '🔇' : '🔊';
+      muteBtn.classList.toggle('active', muted);
+    }
+    updateMuteBtn();
+    muteBtn.addEventListener('click', () => {
+      muted = !muted;
+      localStorage.setItem('hexchess_muted', muted ? '1' : '0');
+      updateMuteBtn();
+    });
 
     // ================================================================
     // HOVER OVERLAY
@@ -1404,7 +1518,7 @@ GAME_HTML = r'''<!DOCTYPE html>
       const n=new Image();
       n.onload=()=>{ img.src=n.src; syncOverlay(); tick++; if(tick%6===0) checkState(); setTimeout(refresh,80); };
       n.onerror=()=>setTimeout(refresh,300);
-      n.src='/frame/'+ROOM+'?t='+Date.now();
+      n.src='/frame/'+ROOM+'?t='+Date.now()+'&flip='+(flipped?'1':'0');
     }
     setTimeout(refresh,80);
 
@@ -1556,6 +1670,13 @@ GAME_HTML = r'''<!DOCTYPE html>
     });
 
     // ================================================================
+    // UNDO
+    // ================================================================
+    document.getElementById('undo-btn').addEventListener('click',()=>{
+      fetch('/undo/'+ROOM,{method:'POST'});
+    });
+
+    // ================================================================
     // CLICK HANDLER
     // ================================================================
     img.addEventListener('click', async function(e) {
@@ -1565,7 +1686,7 @@ GAME_HTML = r'''<!DOCTYPE html>
       const resp=await fetch('/click/'+ROOM,{
         method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify({x:e.clientX-rect.left, y:e.clientY-rect.top,
-                             imgW:rect.width, imgH:rect.height})
+                             imgW:rect.width, imgH:rect.height, flip:flipped})
       });
       const data=await resp.json();
       playSound(data.event);

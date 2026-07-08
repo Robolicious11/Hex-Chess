@@ -22,6 +22,10 @@ hex adaptation instead of the familiar orthogonal L-shape.
 - Per-player chess clocks with an optional time increment (bonus seconds per move), and
   a move history panel (browser client).
 - Mobile-friendly responsive layout (browser client).
+- Undo/takeback the last move — reverts one ply in 2-player games, or both your move
+  and the AI's reply in vs-AI games (browser client).
+- Per-viewer board flip and a mute-sounds toggle, both saved locally in your browser
+  (browser client).
 
 ## Two ways to play
 
@@ -103,7 +107,17 @@ The browser client also has "Resign" and "Offer Draw" buttons. Since there's no 
 login, either button asks which color it's acting for — a draw offer then shows an
 Accept/Decline banner that either player's tab can respond to (the app has no identity
 system at all; every action already works this way, including moves). "Offer Draw" is
-hidden in vs-AI games, since the AI has no logic to evaluate an offer.
+hidden in vs-AI games, since the AI has no logic to evaluate an offer, and resigning as
+the AI's color is rejected by the server (there's only one human, always playing White).
+
+"Undo" reverts the last move; in vs-AI games it takes back your move and the AI's reply
+together in one click, since the intent there is "let me try a different move," not
+just erasing the AI's turn. Undo is blocked while a promotion choice or the AI's move is
+still pending.
+
+Two small per-browser preferences, saved in `localStorage` (not shared with the other
+player or the server): the "⇅ Flip" button rotates the board 180° for this viewer only
+— handy for whoever is playing Black — and the 🔊/🔇 button mutes the sound effects.
 
 ## Testing
 
