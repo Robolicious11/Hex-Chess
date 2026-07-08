@@ -254,3 +254,11 @@ def test_undo_pops_two_plies_in_ai_room():
     assert room["game"].turn == "white"
     assert room["game"].board[w_src] is not None and room["game"].board[w_src].name == "pawn"
     assert room["game"].board[w_dst] is None
+
+
+def test_preview_image_renders_a_valid_png():
+    client = make_client()
+    resp = client.get("/preview.png")
+    assert resp.status_code == 200
+    assert resp.mimetype == "image/png"
+    assert resp.data[:8] == b"\x89PNG\r\n\x1a\n"

@@ -3,6 +3,7 @@ os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 
 import pygame
+import pygame.gfxdraw
 import math
 import io
 import time
@@ -44,6 +45,7 @@ pygame.init()
 surface     = pygame.Surface((WIDTH, HEIGHT))
 label_font  = pygame.font.Font(FONT_PATH, 10)
 _pfcache    = {}
+_hex_overlay_cache = {}
 render_lock = threading.Lock()
 rooms       = {}
 rooms_lock  = threading.Lock()
@@ -538,14 +540,40 @@ def get_piece_font(size):
     return _pfcache[size]
 
 
+def _hex_points(x, y, size):
+    return [(int(x + size * math.cos(math.radians(60 * i))),
+             int(y + size * math.sin(math.radians(60 * i)))) for i in range(6)]
+
+
 def draw_hex(x, y, size, fill, border=HEX_BORDER):
-    pts = [(x + size * math.cos(math.radians(60 * i)),
-            y + size * math.sin(math.radians(60 * i))) for i in range(6)]
-    pygame.draw.polygon(surface, fill,   pts)
-    pygame.draw.polygon(surface, border, pts, 1)
+    pts = _hex_points(x, y, size)
+    # filled_polygon (hard-edged) + aapolygon (anti-aliased outline) is the
+    # standard pygame idiom for a smoother-looking polygon than a plain
+    # pygame.draw.polygon, without needing per-pixel supersampling.
+    pygame.gfxdraw.filled_polygon(surface, pts, fill)
+    pygame.gfxdraw.aapolygon(surface, pts, border)
+
+
+def get_hex_overlay(size, color, alpha=130):
+    """Cached translucent hex, blitted on top of a tile's normal color so
+    highlights read as a tint over the board's texture rather than a flat
+    opaque repaint."""
+    key = (size, color, alpha)
+    cached = _hex_overlay_cache.get(key)
+    if cached is None:
+        pad = size + 2
+        cached = pygame.Surface((pad * 2, pad * 2), pygame.SRCALPHA)
+        pts = _hex_points(pad, pad, size)
+        pygame.gfxdraw.filled_polygon(cached, pts, (*color, alpha))
+        _hex_overlay_cache[key] = cached
+    return cached
 
 
 def draw_piece(sym, fg, ol, font, cx, cy):
+    shadow = font.render(sym, True, (0, 0, 0))
+    shadow.set_alpha(80)
+    surface.blit(shadow, shadow.get_rect(center=(cx + 2, cy + 3)))
+
     ol_s = font.render(sym, True, ol)
     for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
         surface.blit(ol_s, ol_s.get_rect(center=(cx + dx, cy + dy)))
@@ -608,20 +636,24 @@ def render_room(room, flip=False):
         x, y, ts = game.to_pixel(pq, pr, WIDTH, HEIGHT, zoom=ZOOM)
         hr = int(ts * DRAW_SCALE)
 
-        if selected == (q, r):
-            color = (245, 200, 28)
-        elif (q, r) in legal_set:
-            color = (88, 182, 106)
-        elif (q, r) == king_pos:
-            color = (196, 46, 46)
-        elif (q, r) == last_to:
-            color = (80, 138, 205)
-        elif (q, r) == last_from:
-            color = (138, 182, 225)
-        else:
-            color = HEX_BASE_COLORS[(q - r) % 3]
+        draw_hex(x, y, hr, HEX_BASE_COLORS[(q - r) % 3])
 
-        draw_hex(x, y, hr, color)
+        if selected == (q, r):
+            highlight = (245, 200, 28)
+        elif (q, r) in legal_set:
+            highlight = (88, 182, 106)
+        elif (q, r) == king_pos:
+            highlight = (196, 46, 46)
+        elif (q, r) == last_to:
+            highlight = (80, 138, 205)
+        elif (q, r) == last_from:
+            highlight = (138, 182, 225)
+        else:
+            highlight = None
+
+        if highlight:
+            overlay = get_hex_overlay(hr, highlight)
+            surface.blit(overlay, overlay.get_rect(center=(x, y)))
 
         if piece:
             pf  = get_piece_font(int(hr * 1.5))
@@ -718,7 +750,17 @@ def get_frame_bytes(room, flip=False):
 
 @app.route('/')
 def index():
-    return render_template_string(LANDING_HTML)
+    preview_url = url_for('preview_image', _external=True)
+    return render_template_string(LANDING_HTML, preview_url=preview_url)
+
+
+@app.route('/preview.png')
+def preview_image():
+    """Generic starting-position board image, used as the Open Graph /
+    Twitter preview thumbnail when the game link is shared."""
+    preview_room = make_room()
+    return Response(get_frame_bytes(preview_room), mimetype='image/png',
+                    headers={'Cache-Control': 'public, max-age=3600'})
 
 
 @app.route('/new', methods=['POST'])
@@ -753,10 +795,12 @@ def game_page(room_id):
     if room is None:
         return "Game not found. <a href='/'>Create a new game</a>", 404
     first_frame = base64.b64encode(get_frame_bytes(room)).decode('utf-8')
+    preview_url = url_for('preview_image', _external=True)
     return render_template_string(GAME_HTML, room_id=room_id,
                                   first_frame=first_frame,
                                   ai_mode=room.get("ai", False),
-                                  ai_difficulty=room.get("ai_difficulty", "medium"))
+                                  ai_difficulty=room.get("ai_difficulty", "medium"),
+                                  preview_url=preview_url)
 
 
 @app.route('/frame/<room_id>')
@@ -1059,6 +1103,16 @@ LANDING_HTML = r'''<!DOCTYPE html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Hex Chess</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%231a2338'/%3E%3Ctext x='50' y='72' font-size='64' text-anchor='middle' fill='%23e8dfc8'%3E%E2%99%9E%3C/text%3E%3C/svg%3E">
+  <meta property="og:title" content="Hex Chess">
+  <meta property="og:description" content="Chess adapted to a hexagonal board — play a friend or an AI opponent, right in your browser.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="{{ request.url_root }}">
+  <meta property="og:image" content="{{ preview_url }}">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Hex Chess">
+  <meta name="twitter:description" content="Chess adapted to a hexagonal board — play a friend or an AI opponent, right in your browser.">
+  <meta name="twitter:image" content="{{ preview_url }}">
   <style>
     *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
     body {
@@ -1197,6 +1251,16 @@ GAME_HTML = r'''<!DOCTYPE html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Hex Chess</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%231a2338'/%3E%3Ctext x='50' y='72' font-size='64' text-anchor='middle' fill='%23e8dfc8'%3E%E2%99%9E%3C/text%3E%3C/svg%3E">
+  <meta property="og:title" content="Join my Hex Chess game">
+  <meta property="og:description" content="Chess adapted to a hexagonal board — click the link to play.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="{{ request.url }}">
+  <meta property="og:image" content="{{ preview_url }}">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Join my Hex Chess game">
+  <meta name="twitter:description" content="Chess adapted to a hexagonal board — click the link to play.">
+  <meta name="twitter:image" content="{{ preview_url }}">
   <style>
     *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
     body {
@@ -1257,22 +1321,34 @@ GAME_HTML = r'''<!DOCTYPE html>
                    border-radius:3px; padding:1px 4px; }
     .history-empty { color:#3a4858; font-size:0.78rem; text-align:center; padding:20px 14px; }
 
-    #bottom-row { display:flex; align-items:center; justify-content:center; gap:16px;
+    #capture-tray { display:flex; gap:24px; justify-content:center; flex-wrap:wrap;
+                    margin-top:10px; max-width:100%; }
+    .capture-side { display:flex; align-items:center; gap:8px; }
+    .capture-label { font-size:0.62rem; letter-spacing:1.5px; color:#5a6878; }
+    .capture-pieces { font-size:1.05rem; letter-spacing:1px; color:#c8d0da; min-height:1.2em; }
+    .capture-diff { font-size:0.75rem; font-weight:700; color:#5aa86a; }
+
+    #bottom-row { display:flex; align-items:center; justify-content:center; gap:12px;
                   margin-top:10px; flex-wrap:wrap; }
-    #reset-btn { padding:8px 24px; background:#a82828; color:#fff; border:none;
-                 border-radius:8px; font-size:0.88rem; cursor:pointer;
-                 letter-spacing:1px; transition:background 0.18s; }
-    #reset-btn:hover { background:#c03030; }
-    #resign-btn, #draw-btn, #undo-btn { padding:8px 24px; color:#fff; border:none;
-                 border-radius:8px; font-size:0.88rem; cursor:pointer;
-                 letter-spacing:1px; transition:background 0.18s, opacity 0.18s; }
-    #resign-btn { background:#5a5a5a; }
-    #resign-btn:hover { background:#6c6c6c; }
-    #draw-btn { background:#3a5a80; }
-    #draw-btn:hover { background:#4a6f9a; }
-    #undo-btn { background:#5a6a3a; }
-    #undo-btn:hover { background:#6f8248; }
-    #resign-btn:disabled, #draw-btn:disabled { opacity:0.4; cursor:default; }
+    #bottom-row button { padding:9px 22px; border-radius:8px; font-size:0.88rem;
+                 cursor:pointer; letter-spacing:0.5px; font-weight:600;
+                 transition:background 0.18s, border-color 0.18s, opacity 0.18s; }
+    #bottom-row button:disabled { opacity:0.4; cursor:default; }
+
+    /* Offer Draw: the one "positive/social" committal action — solid fill
+       using the app's existing accent blue (see promo-box/choice-btn). */
+    #draw-btn { background:#3a70b8; color:#fff; border:none; }
+    #draw-btn:hover { background:#4a84d0; }
+
+    /* Undo / Reset: everyday utility actions — neutral outlined/ghost style. */
+    #undo-btn, #reset-btn { background:rgba(255,255,255,0.06); color:#dde3ea;
+                 border:1px solid rgba(255,255,255,0.18); }
+    #undo-btn:hover, #reset-btn:hover { background:rgba(255,255,255,0.14); }
+
+    /* Resign: rare, consequential — muted caution outline, not a solid block. */
+    #resign-btn { background:rgba(200,60,60,0.08); color:#e8a0a0;
+                 border:1px solid rgba(200,90,90,0.5); }
+    #resign-btn:hover { background:rgba(200,60,60,0.22); color:#ffb8b8; }
 
     #promo-overlay, #choice-overlay { display:none; position:fixed; inset:0;
                      background:rgba(0,0,0,0.78); z-index:100;
@@ -1345,13 +1421,26 @@ GAME_HTML = r'''<!DOCTYPE html>
     </div>
   </div>
 
+  <div id="capture-tray">
+    <div class="capture-side">
+      <span class="capture-label">WHITE CAPTURED</span>
+      <span class="capture-pieces" id="capture-white"></span>
+      <span class="capture-diff" id="capture-diff-white"></span>
+    </div>
+    <div class="capture-side">
+      <span class="capture-label">BLACK CAPTURED</span>
+      <span class="capture-pieces" id="capture-black"></span>
+      <span class="capture-diff" id="capture-diff-black"></span>
+    </div>
+  </div>
+
   <div id="bottom-row">
-    <button id="resign-btn">Resign</button>
     {% if not ai_mode %}
-    <button id="draw-btn">Offer Draw</button>
+    <button id="draw-btn">🤝 Offer Draw</button>
     {% endif %}
-    <button id="undo-btn">Undo</button>
-    <button id="reset-btn">Reset Game</button>
+    <button id="undo-btn">↺ Undo</button>
+    <button id="reset-btn">⟳ Reset Game</button>
+    <button id="resign-btn">🏳 Resign</button>
   </div>
 
   <div id="promo-overlay">
@@ -1651,12 +1740,41 @@ GAME_HTML = r'''<!DOCTYPE html>
         list.appendChild(pair);
       }
       list.scrollTop=list.scrollHeight;
+      renderCaptureTray(moves);
     }
     function moveHTML(m) {
       const cls=m.color==='white'?'white-entry':'black-entry';
       const cap=m.captured?'<span class="capture-dot"></span>':'';
       const promo=m.promo_to?`<span class="promo-badge">=${m.promo_to[0].toUpperCase()}</span>`:'';
       return `<div class="move-entry ${cls}"><span class="sym">${m.sym}</span><span class="coords">${m.from_label}→${m.to_label}</span>${cap}${promo}</div>`;
+    }
+
+    // ================================================================
+    // CAPTURED-PIECES TRAY
+    // ================================================================
+    const CAPTURE_VALUE   = {pawn:1, knight:3, bishop:3, queen:9};
+    const CAPTURE_ORDER    = {pawn:0, knight:1, bishop:2, queen:3};
+    const WHITE_PIECE_GLYPH = {pawn:'♙', knight:'♘', bishop:'♗', queen:'♕'};
+    const BLACK_PIECE_GLYPH = {pawn:'♟', knight:'♞', bishop:'♝', queen:'♛'};
+
+    function renderCaptureTray(moves) {
+      // "White captured" = black pieces White has taken, and vice versa —
+      // render each with the glyph of the piece that was actually captured.
+      const takenByWhite = moves.filter(m => m.color === 'white' && m.captured).map(m => m.captured);
+      const takenByBlack = moves.filter(m => m.color === 'black' && m.captured).map(m => m.captured);
+      const byValue = (a, b) => (CAPTURE_ORDER[a] ?? 9) - (CAPTURE_ORDER[b] ?? 9);
+      takenByWhite.sort(byValue);
+      takenByBlack.sort(byValue);
+
+      document.getElementById('capture-white').textContent =
+        takenByWhite.map(p => BLACK_PIECE_GLYPH[p] || '').join(' ');
+      document.getElementById('capture-black').textContent =
+        takenByBlack.map(p => WHITE_PIECE_GLYPH[p] || '').join(' ');
+
+      const sum = list => list.reduce((total, p) => total + (CAPTURE_VALUE[p] || 0), 0);
+      const diff = sum(takenByWhite) - sum(takenByBlack);
+      document.getElementById('capture-diff-white').textContent = diff > 0 ? '+' + diff : '';
+      document.getElementById('capture-diff-black').textContent = diff < 0 ? '+' + (-diff) : '';
     }
 
     // ================================================================

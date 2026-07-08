@@ -26,6 +26,9 @@ hex adaptation instead of the familiar orthogonal L-shape.
   and the AI's reply in vs-AI games (browser client).
 - Per-viewer board flip and a mute-sounds toggle, both saved locally in your browser
   (browser client).
+- A captured-pieces tray with a material-difference badge (browser client).
+- A favicon and Open Graph/Twitter preview image, so the shared game link looks right
+  when pasted into chat apps.
 
 ## Two ways to play
 
