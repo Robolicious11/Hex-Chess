@@ -15,9 +15,13 @@ class Game:
         self.size = size
         self.board = {}
         self.turn = "white"
+        self.en_passant_target = None
+        self.halfmove_clock = 0
+        self.position_history = []
 
         self.create_board()
         self.setup_pieces()
+        self.record_position()
 
     # --- Create hex board ---
     def create_board(self):
@@ -164,6 +168,8 @@ class Game:
                     target = self.board[pos]
                     if target and target.owner != piece.owner:
                         moves.append(pos)
+                    elif pos == self.en_passant_target:
+                        moves.append(pos)
 
         return moves
 
@@ -193,6 +199,17 @@ class Game:
         legal = []
         for end in self._pseudo_moves(position):
             captured = self.board[end]
+
+            # En passant: the captured pawn sits behind the destination square,
+            # not on it, so it must be removed separately for the check test.
+            ep_pos = None
+            ep_captured = None
+            if piece.name == "pawn" and end == self.en_passant_target and captured is None:
+                forward = (0, -1) if piece.owner == "white" else (0, 1)
+                ep_pos = (end[0] - forward[0], end[1] - forward[1])
+                ep_captured = self.board.get(ep_pos)
+                self.board[ep_pos] = None
+
             self.board[end] = piece
             self.board[position] = None
 
@@ -200,6 +217,8 @@ class Game:
 
             self.board[position] = piece
             self.board[end] = captured
+            if ep_pos is not None:
+                self.board[ep_pos] = ep_captured
 
             if not still_in_check:
                 legal.append(end)
@@ -225,6 +244,26 @@ class Game:
     def is_stalemate(self, color):
         return not self.is_in_check(color) and not self.has_legal_moves(color)
 
+    # --- Draw detection (50-move rule / threefold repetition) ---
+    def _position_key(self):
+        pieces = tuple(sorted(
+            (pos, piece.name, piece.owner)
+            for pos, piece in self.board.items() if piece
+        ))
+        return (pieces, self.turn, self.en_passant_target)
+
+    def record_position(self):
+        """Call after any move (including externally-applied ones like
+        promotions) so repetition/50-move tracking stays accurate."""
+        self.position_history.append(self._position_key())
+
+    def is_draw(self):
+        if self.halfmove_clock >= 100:
+            return True
+        if self.position_history and self.position_history.count(self.position_history[-1]) >= 3:
+            return True
+        return False
+
     # --- Pawn promotion ---
     def is_promotion_square(self, pos, owner):
         """True if a pawn at pos has reached the far edge for that owner."""
@@ -236,13 +275,36 @@ class Game:
     def move(self, start, end):
         piece = self.board[start]
 
-        if end in self.legal_moves(start):
-            self.board[end] = piece
-            self.board[start] = None
-            piece.has_moved = True
-            self.turn = "black" if self.turn == "white" else "white"
-        else:
+        if end not in self.legal_moves(start):
             print("Illegal move!")
+            return
+
+        captured = self.board[end]
+
+        # En passant capture: remove the pawn that just double-stepped.
+        if piece.name == "pawn" and end == self.en_passant_target and captured is None:
+            forward = (0, -1) if piece.owner == "white" else (0, 1)
+            ep_pos = (end[0] - forward[0], end[1] - forward[1])
+            captured = self.board.get(ep_pos)
+            self.board[ep_pos] = None
+
+        self.board[end] = piece
+        self.board[start] = None
+        piece.has_moved = True
+
+        # New en passant target if this was a pawn double-step.
+        new_ep = None
+        if piece.name == "pawn" and start[0] == end[0] and abs(start[1] - end[1]) == 2:
+            new_ep = ((start[0] + end[0]) // 2, (start[1] + end[1]) // 2)
+        self.en_passant_target = new_ep
+
+        if piece.name == "pawn" or captured is not None:
+            self.halfmove_clock = 0
+        else:
+            self.halfmove_clock += 1
+
+        self.turn = "black" if self.turn == "white" else "white"
+        self.record_position()
 
     # --- Pixel conversion ---
     def to_pixel(self, q, r, width, height, zoom=1.0):

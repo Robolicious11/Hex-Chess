@@ -69,6 +69,7 @@ def make_room(time_limit=300, ai=False, ai_difficulty="medium"):
         "ai":                ai,
         "ai_color":          "black" if ai else None,
         "ai_difficulty":     ai_difficulty,
+        "ai_thinking":       False,
         "last_event":        None,
         "event_seq":         0,
         "lock":              threading.Lock(),
@@ -125,6 +126,8 @@ def check_game_over(game):
         return ("checkmate", "black" if cur == "white" else "white")
     if game.is_stalemate(cur):
         return ("stalemate", None)
+    if game.is_draw():
+        return ("draw", None)
     return None
 
 
@@ -169,28 +172,56 @@ def apply_move_search(game, src, dst):
     prev_moved  = piece.has_moved
     prev_name   = piece.name
     prev_turn   = game.turn
+    prev_ep     = game.en_passant_target
+    prev_half   = game.halfmove_clock
+
+    # En passant capture during search, mirroring Game.move().
+    ep_pos, ep_captured = None, None
+    if piece.name == "pawn" and dst == game.en_passant_target and captured is None:
+        forward  = (0, -1) if piece.owner == "white" else (0, 1)
+        ep_pos   = (dst[0] - forward[0], dst[1] - forward[1])
+        ep_captured = game.board.get(ep_pos)
+        game.board[ep_pos] = None
+
     game.board[dst] = piece
     game.board[src] = None
     piece.has_moved = True
     # Auto-promote to queen during search
     if piece.name == "pawn" and game.is_promotion_square(dst, piece.owner):
         piece.name = "queen"
+
+    new_ep = None
+    if prev_name == "pawn" and src[0] == dst[0] and abs(src[1] - dst[1]) == 2:
+        new_ep = ((src[0] + dst[0]) // 2, (src[1] + dst[1]) // 2)
+    game.en_passant_target = new_ep
+
+    if prev_name == "pawn" or captured is not None or ep_captured is not None:
+        game.halfmove_clock = 0
+    else:
+        game.halfmove_clock = prev_half + 1
+
     game.turn = "black" if game.turn == "white" else "white"
-    return (src, dst, piece, captured, prev_moved, prev_name, prev_turn)
+    return (src, dst, piece, captured, prev_moved, prev_name, prev_turn,
+            prev_ep, prev_half, ep_pos, ep_captured)
 
 
 def undo_move_search(game, tok):
-    src, dst, piece, captured, prev_moved, prev_name, prev_turn = tok
+    (src, dst, piece, captured, prev_moved, prev_name, prev_turn,
+     prev_ep, prev_half, ep_pos, ep_captured) = tok
     game.board[src] = piece
     game.board[dst] = captured
     piece.has_moved = prev_moved
     piece.name      = prev_name
     game.turn       = prev_turn
+    game.en_passant_target = prev_ep
+    game.halfmove_clock    = prev_half
+    if ep_pos is not None:
+        game.board[ep_pos] = ep_captured
 
 
 def evaluate_board(game, ai_color):
-    """Material + pawn-advancement heuristic from AI's perspective."""
-    MAT   = {"queen": 9.0, "bishop": 3.0, "knight": 3.0, "pawn": 1.0, "king": 0.0}
+    """Material + positional heuristic from AI's perspective."""
+    MAT   = {"queen": 9.0, "bishop": 3.25, "knight": 3.0, "pawn": 1.0, "king": 0.0}
     score = 0.0
     for (q, r), piece in game.board.items():
         if piece is None:
@@ -200,7 +231,19 @@ def evaluate_board(game, ai_color):
         if piece.name == "pawn":
             adv = (-r) if piece.owner == "white" else r
             val += 0.15 * adv
+        elif piece.name in ("knight", "bishop", "queen"):
+            # Central squares have more reach on a hex board.
+            dist = (abs(q) + abs(r) + abs(q + r)) / 2
+            val += max(0.0, 0.08 * (game.size - dist))
+        # Cheap mobility proxy (pseudo-moves, no check simulation).
+        val += 0.02 * len(game._pseudo_moves((q, r)))
         score += val if piece.owner == ai_color else -val
+
+    opponent = "black" if ai_color == "white" else "white"
+    if game.is_in_check(ai_color):
+        score -= 0.5
+    if game.is_in_check(opponent):
+        score += 0.5
     return score
 
 
@@ -217,7 +260,14 @@ def _collect_moves(game):
     return moves
 
 
-def minimax_search(game, depth, alpha, beta, maximizing, ai_color):
+class _TimeUp(Exception):
+    pass
+
+
+def minimax_search(game, depth, alpha, beta, maximizing, ai_color, deadline=None):
+    if deadline is not None and time.time() > deadline:
+        raise _TimeUp()
+
     if depth == 0:
         return evaluate_board(game, ai_color), None
 
@@ -233,8 +283,10 @@ def minimax_search(game, depth, alpha, beta, maximizing, ai_color):
         best_val = -float("inf")
         for _, src, dst in moves:
             tok = apply_move_search(game, src, dst)
-            val, _ = minimax_search(game, depth - 1, alpha, beta, False, ai_color)
-            undo_move_search(game, tok)
+            try:
+                val, _ = minimax_search(game, depth - 1, alpha, beta, False, ai_color, deadline)
+            finally:
+                undo_move_search(game, tok)
             if val > best_val:
                 best_val, best_move = val, (src, dst)
             alpha = max(alpha, val)
@@ -244,8 +296,10 @@ def minimax_search(game, depth, alpha, beta, maximizing, ai_color):
         best_val = float("inf")
         for _, src, dst in moves:
             tok = apply_move_search(game, src, dst)
-            val, _ = minimax_search(game, depth - 1, alpha, beta, True, ai_color)
-            undo_move_search(game, tok)
+            try:
+                val, _ = minimax_search(game, depth - 1, alpha, beta, True, ai_color, deadline)
+            finally:
+                undo_move_search(game, tok)
             if val < best_val:
                 best_val, best_move = val, (src, dst)
             beta = min(beta, val)
@@ -267,7 +321,7 @@ def find_best_move(game_copy, ai_color, difficulty):
 
     if difficulty == "medium":
         # Depth-1: pick best immediate move by material eval
-        best_val, best_move_local = -float("inf"), None
+        best_val = -float("inf")
         candidates = []
         for _, src, dst in moves:
             tok = apply_move_search(game_copy, src, dst)
@@ -280,8 +334,22 @@ def find_best_move(game_copy, ai_color, difficulty):
                 candidates.append((src, dst))
         return random.choice(candidates)
 
-    # "hard": depth-2 minimax with alpha-beta
-    _, best = minimax_search(game_copy, 2, -float("inf"), float("inf"), True, ai_color)
+    # "hard": iterative-deepening minimax with alpha-beta, bounded by a
+    # time budget rather than a fixed depth so it scales with whatever
+    # the branching factor of the current position happens to be.
+    deadline = time.time() + 2.5
+    best = None
+    depth = 1
+    while depth <= 5:
+        try:
+            _, mv = minimax_search(game_copy, depth, -float("inf"), float("inf"), True, ai_color, deadline)
+        except _TimeUp:
+            break
+        if mv is not None:
+            best = mv
+        if time.time() >= deadline:
+            break
+        depth += 1
     if best is None:
         _, src, dst = random.choice(moves)
         return src, dst
@@ -293,61 +361,72 @@ def find_best_move(game_copy, ai_color, difficulty):
 # ---------------------------------------------------------------------------
 
 def trigger_ai_move(room_id):
-    time.sleep(0.45)
     room = get_room(room_id)
     if not room:
         return
 
-    # Stage 1: snapshot game state under lock
     with room["lock"]:
-        check_timer_expiry(room)
-        if room["winner"] or room["pending_promotion"]:
+        room["ai_thinking"] = True
+
+    try:
+        time.sleep(0.45)
+
+        # Stage 1: snapshot game state under lock
+        with room["lock"]:
+            check_timer_expiry(room)
+            if room["winner"] or room["pending_promotion"]:
+                return
+            ai_color   = room.get("ai_color", "black")
+            difficulty = room.get("ai_difficulty", "medium")
+            if room["game"].turn != ai_color:
+                return
+            game_copy = copy.deepcopy(room["game"])
+
+        # Stage 2: find best move OUTSIDE lock (CPU-intensive)
+        src, dst = find_best_move(game_copy, ai_color, difficulty)
+        if src is None:
             return
-        ai_color   = room.get("ai_color", "black")
-        difficulty = room.get("ai_difficulty", "medium")
-        if room["game"].turn != ai_color:
-            return
-        game_copy = copy.deepcopy(room["game"])
 
-    # Stage 2: find best move OUTSIDE lock (CPU-intensive)
-    src, dst = find_best_move(game_copy, ai_color, difficulty)
-    if src is None:
-        return
+        # Stage 3: apply the chosen move under lock
+        with room["lock"]:
+            if room["winner"] or room["pending_promotion"]:
+                return
+            game = room["game"]
+            if game.turn != ai_color:
+                return
 
-    # Stage 3: apply the chosen move under lock
-    with room["lock"]:
-        if room["winner"] or room["pending_promotion"]:
-            return
-        game = room["game"]
-        if game.turn != ai_color:
-            return
+            moving_piece = game.board.get(src)
+            if moving_piece is None:
+                return
+            captured  = game.board.get(dst)
+            cap_name  = captured.name if captured else None
+            is_promo  = (moving_piece.name == "pawn"
+                         and game.is_promotion_square(dst, moving_piece.owner))
 
-        moving_piece = game.board.get(src)
-        if moving_piece is None:
-            return
-        captured  = game.board.get(dst)
-        cap_name  = captured.name if captured else None
-        is_promo  = (moving_piece.name == "pawn"
-                     and game.is_promotion_square(dst, moving_piece.owner))
+            deduct_clock(room)
 
-        deduct_clock(room)
+            if is_promo:
+                game.board[dst] = moving_piece
+                game.board[src] = None
+                moving_piece.has_moved   = True
+                game.board[dst].name     = "queen"
+                game.en_passant_target   = None
+                game.halfmove_clock      = 0
+                game.turn = "black" if game.turn == "white" else "white"
+                game.record_position()
+                record_move(room, ai_color, "pawn", src, dst, cap_name, promo_to="queen")
+            else:
+                game.move(src, dst)
+                record_move(room, ai_color, moving_piece.name, src, dst, cap_name)
 
-        if is_promo:
-            game.board[dst] = moving_piece
-            game.board[src] = None
-            moving_piece.has_moved = True
-            game.board[dst].name   = "queen"
-            game.turn = "black" if game.turn == "white" else "white"
-            record_move(room, ai_color, "pawn", src, dst, cap_name, promo_to="queen")
-        else:
-            game.move(src, dst)
-            record_move(room, ai_color, moving_piece.name, src, dst, cap_name)
-
-        room["last_move"] = {"from": src, "to": dst}
-        apply_result(room, check_game_over(game))
-        event = compute_event(cap_name, game, room["winner"] is not None)
-        room["last_event"] = event
-        room["event_seq"] += 1
+            room["last_move"] = {"from": src, "to": dst}
+            apply_result(room, check_game_over(game))
+            event = compute_event(cap_name, game, room["winner"] is not None)
+            room["last_event"] = event
+            room["event_seq"] += 1
+    finally:
+        with room["lock"]:
+            room["ai_thinking"] = False
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +490,14 @@ def render_room(room):
     last_from = lm.get("from")
     last_to   = lm.get("to")
 
+    in_check_now = not room.get("winner") and game.is_in_check(game.turn)
+    king_pos = None
+    if in_check_now:
+        for pos, piece in game.board.items():
+            if piece and piece.name == "king" and piece.owner == game.turn:
+                king_pos = pos
+                break
+
     surface.fill(BOARD_BG)
 
     for (q, r), piece in game.board.items():
@@ -421,6 +508,8 @@ def render_room(room):
             color = (245, 200, 28)
         elif (q, r) in legal_set:
             color = (88, 182, 106)
+        elif (q, r) == king_pos:
+            color = (196, 46, 46)
         elif (q, r) == last_to:
             color = (80, 138, 205)
         elif (q, r) == last_from:
@@ -452,7 +541,9 @@ def render_room(room):
         surface.blit(ov, (0, 0))
         big = pygame.font.Font(FONT_PATH, 38)
         sub = pygame.font.Font(FONT_PATH, 19)
-        if winner == "draw":
+        if winner == "draw" and room.get("win_reason") == "draw":
+            title = big.render("Draw — repetition / 50-move rule", True, (200, 200, 255))
+        elif winner == "draw":
             title = big.render("Stalemate — Draw!", True, (200, 200, 255))
         elif room.get("win_reason") == "timeout":
             loser = "black" if winner == "white" else "white"
@@ -476,6 +567,16 @@ def render_room(room):
         pygame.draw.rect(surface, HEX_BORDER, (10, 10, bw, 34), 2, border_radius=8)
         surface.blit(lf.render(lbl, True, fg),
                      lf.render(lbl, True, fg).get_rect(center=(10 + bw // 2, 27)))
+
+        if room.get("ai_thinking"):
+            tf  = pygame.font.Font(FONT_PATH, 13)
+            txt = "AI is thinking…"
+            tw2 = tf.size(txt)[0]
+            bx, by, bwid, bhei = 10, 50, tw2 + 20, 26
+            pygame.draw.rect(surface, (44, 44, 44),   (bx, by, bwid, bhei), border_radius=7)
+            pygame.draw.rect(surface, HEX_BORDER,     (bx, by, bwid, bhei), 2, border_radius=7)
+            surface.blit(tf.render(txt, True, (150, 190, 230)),
+                         tf.render(txt, True, (150, 190, 230)).get_rect(center=(bx + bwid // 2, by + bhei // 2)))
 
         init = room.get("init_time")
         if init is not None:
@@ -619,6 +720,8 @@ def click(room_id):
                     game.board[(q, r)]       = moving_piece
                     game.board[src]          = None
                     moving_piece.has_moved   = True
+                    game.en_passant_target   = None
+                    game.halfmove_clock      = 0
                     room["pending_promotion"] = (q, r)
                     room["selected"] = None
                     room["legal_moves"] = []
@@ -673,6 +776,7 @@ def reset(room_id):
         room["black_time"]        = init
         room["clock_since"]       = time.time() if init else None
         room["last_event"]        = None
+        room["ai_thinking"]       = False
         room["event_seq"]        += 1
     return jsonify({'ok': True})
 
@@ -700,6 +804,7 @@ def promote(room_id):
             room["history"][-1]["sym"]      = PIECE_SYMBOLS[game.turn][piece_name]
         deduct_clock(room)
         game.turn = "black" if game.turn == "white" else "white"
+        game.record_position()
         apply_result(room, check_game_over(game))
         event = compute_event(None, game, room["winner"] is not None)
         room["last_event"] = event
@@ -808,13 +913,12 @@ LANDING_HTML = r'''<!DOCTYPE html>
       </div>
 
       <div id="ai-fields" style="display:none;">
-        <div class="ai-note">AI under development..</div>
         <div class="field">
           <label for="difficulty">AI DIFFICULTY</label>
           <select name="difficulty" id="difficulty">
             <option value="easy">Plays randomly</option>
             <option value="medium" selected>Greedy, prefers captures</option>
-            <option value="hard">Thinks 2 moves ahead</option>
+            <option value="hard">Searches several moves ahead</option>
           </select>
         </div>
       </div>
