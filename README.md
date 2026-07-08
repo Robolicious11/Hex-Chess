@@ -29,6 +29,7 @@ hex adaptation instead of the familiar orthogonal L-shape.
 - A captured-pieces tray with a material-difference badge (browser client).
 - A favicon and Open Graph/Twitter preview image, so the shared game link looks right
   when pasted into chat apps.
+- A choice of board color themes (classic, ocean, forest), picked when creating a game.
 
 ## Two ways to play
 

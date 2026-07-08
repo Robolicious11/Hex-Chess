@@ -262,3 +262,24 @@ def test_preview_image_renders_a_valid_png():
     assert resp.status_code == 200
     assert resp.mimetype == "image/png"
     assert resp.data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_new_game_stores_valid_theme():
+    client = make_client()
+    room_id = create_room(client, "198.51.100.13", theme="ocean")
+    assert server.rooms[room_id]["theme"] == "ocean"
+
+
+def test_new_game_falls_back_to_default_theme_for_invalid_value():
+    client = make_client()
+    room_id = create_room(client, "198.51.100.14", theme="not-a-real-theme")
+    assert server.rooms[room_id]["theme"] == server.DEFAULT_BOARD_THEME
+
+
+def test_frame_renders_with_each_board_theme():
+    client = make_client()
+    for theme in server.BOARD_THEMES:
+        room_id = create_room(client, f"198.51.100.{15 + list(server.BOARD_THEMES).index(theme)}", theme=theme)
+        resp = client.get(f"/frame/{room_id}")
+        assert resp.status_code == 200
+        assert resp.data[:8] == b"\x89PNG\r\n\x1a\n"

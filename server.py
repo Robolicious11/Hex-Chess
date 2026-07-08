@@ -30,13 +30,34 @@ PIECE_SYMBOLS = {
     "black": {"king": "♚", "queen": "♛", "bishop": "♝", "knight": "♞", "pawn": "♟"},
 }
 
-HEX_BASE_COLORS = [(210, 200, 186), (180, 168, 152), (148, 134, 116)]
-HEX_BORDER      = (90, 80, 68)
-BOARD_BG        = (232, 225, 214)
 WHITE_PIECE_FG  = (248, 242, 226)
 WHITE_PIECE_OL  = (42,  35,  24)
 BLACK_PIECE_FG  = (28,  22,  16)
 BLACK_PIECE_OL  = (205, 196, 178)
+
+# Board color themes are a per-room setting (chosen at /new, like time_limit
+# or difficulty) rather than a per-viewer preference like Flip, since the
+# board is rendered server-side into one shared PNG for both players.
+# Piece and highlight colors stay constant across themes — only tile/
+# border/background colors vary — to avoid any contrast/legibility risk.
+BOARD_THEMES = {
+    "classic": {
+        "base":   [(210, 200, 186), (180, 168, 152), (148, 134, 116)],
+        "border": (90, 80, 68),
+        "bg":     (232, 225, 214),
+    },
+    "ocean": {
+        "base":   [(198, 214, 222), (162, 184, 196), (128, 154, 170)],
+        "border": (54, 78, 94),
+        "bg":     (214, 226, 232),
+    },
+    "forest": {
+        "base":   [(202, 210, 182), (172, 186, 148), (140, 156, 112)],
+        "border": (66, 80, 50),
+        "bg":     (222, 228, 206),
+    },
+}
+DEFAULT_BOARD_THEME = "classic"
 
 ROOM_INACTIVITY_TIMEOUT = 2 * 60 * 60   # purge rooms idle longer than this
 REAPER_SWEEP_INTERVAL   = 5 * 60        # how often the reaper checks
@@ -55,7 +76,8 @@ rooms_lock  = threading.Lock()
 # Room helpers
 # ---------------------------------------------------------------------------
 
-def make_room(time_limit=300, ai=False, ai_difficulty="medium", increment=0):
+def make_room(time_limit=300, ai=False, ai_difficulty="medium", increment=0,
+              theme=DEFAULT_BOARD_THEME):
     now = time.time()
     tl  = float(time_limit) if time_limit > 0 else None
     return {
@@ -77,6 +99,7 @@ def make_room(time_limit=300, ai=False, ai_difficulty="medium", increment=0):
         "ai_color":          "black" if ai else None,
         "ai_difficulty":     ai_difficulty,
         "ai_thinking":       False,
+        "theme":             theme if theme in BOARD_THEMES else DEFAULT_BOARD_THEME,
         "last_event":        None,
         "event_seq":         0,
         "lock":              threading.Lock(),
@@ -545,7 +568,7 @@ def _hex_points(x, y, size):
              int(y + size * math.sin(math.radians(60 * i)))) for i in range(6)]
 
 
-def draw_hex(x, y, size, fill, border=HEX_BORDER):
+def draw_hex(x, y, size, fill, border):
     pts = _hex_points(x, y, size)
     # filled_polygon (hard-edged) + aapolygon (anti-aliased outline) is the
     # standard pygame idiom for a smoother-looking polygon than a plain
@@ -616,6 +639,7 @@ def render_room(room, flip=False):
     lm        = room.get("last_move") or {}
     last_from = lm.get("from")
     last_to   = lm.get("to")
+    theme     = BOARD_THEMES.get(room.get("theme"), BOARD_THEMES[DEFAULT_BOARD_THEME])
 
     in_check_now = not room.get("winner") and game.is_in_check(game.turn)
     king_pos = None
@@ -625,7 +649,7 @@ def render_room(room, flip=False):
                 king_pos = pos
                 break
 
-    surface.fill(BOARD_BG)
+    surface.fill(theme["bg"])
 
     for (q, r), piece in game.board.items():
         # Flip is a purely visual, per-viewer rotation: draw the true square
@@ -636,7 +660,7 @@ def render_room(room, flip=False):
         x, y, ts = game.to_pixel(pq, pr, WIDTH, HEIGHT, zoom=ZOOM)
         hr = int(ts * DRAW_SCALE)
 
-        draw_hex(x, y, hr, HEX_BASE_COLORS[(q - r) % 3])
+        draw_hex(x, y, hr, theme["base"][(q - r) % 3], theme["border"])
 
         if selected == (q, r):
             highlight = (245, 200, 28)
@@ -705,8 +729,8 @@ def render_room(room, flip=False):
         lbl = f"{tw} is in CHECK!" if in_check else f"{tw}'s turn"
         lf  = pygame.font.Font(FONT_PATH, 16)
         bw  = 212 if in_check else 152
-        pygame.draw.rect(surface, bg,         (10, 10, bw, 34), border_radius=8)
-        pygame.draw.rect(surface, HEX_BORDER, (10, 10, bw, 34), 2, border_radius=8)
+        pygame.draw.rect(surface, bg,             (10, 10, bw, 34), border_radius=8)
+        pygame.draw.rect(surface, theme["border"], (10, 10, bw, 34), 2, border_radius=8)
         surface.blit(lf.render(lbl, True, fg),
                      lf.render(lbl, True, fg).get_rect(center=(10 + bw // 2, 27)))
 
@@ -716,7 +740,7 @@ def render_room(room, flip=False):
             tw2 = tf.size(txt)[0]
             bx, by, bwid, bhei = 10, 50, tw2 + 20, 26
             pygame.draw.rect(surface, (44, 44, 44),   (bx, by, bwid, bhei), border_radius=7)
-            pygame.draw.rect(surface, HEX_BORDER,     (bx, by, bwid, bhei), 2, border_radius=7)
+            pygame.draw.rect(surface, theme["border"], (bx, by, bwid, bhei), 2, border_radius=7)
             surface.blit(tf.render(txt, True, (150, 190, 230)),
                          tf.render(txt, True, (150, 190, 230)).get_rect(center=(bx + bwid // 2, by + bhei // 2)))
 
@@ -783,9 +807,12 @@ def new_game():
     difficulty = request.form.get('difficulty', 'medium')
     if difficulty not in ('easy', 'medium', 'hard'):
         difficulty = 'medium'
+    theme = request.form.get('theme', DEFAULT_BOARD_THEME)
+    if theme not in BOARD_THEMES:
+        theme = DEFAULT_BOARD_THEME
     with rooms_lock:
         rooms[room_id] = make_room(time_limit=time_limit, ai=ai, ai_difficulty=difficulty,
-                                    increment=increment)
+                                    increment=increment, theme=theme)
     return redirect(url_for('game_page', room_id=room_id))
 
 
@@ -1119,7 +1146,32 @@ LANDING_HTML = r'''<!DOCTYPE html>
       background: radial-gradient(ellipse at 50% 30%, #1e2540 0%, #0f1220 100%);
       display:flex; flex-direction:column; align-items:center; justify-content:center;
       min-height:100vh; font-family:'Segoe UI', system-ui, sans-serif; color:#eee;
+      position:relative; overflow-x:hidden;
     }
+    /* Two large, very faint hex silhouettes peeking from opposite corners —
+       a subtle thematic nod to "hex chess", not meant to be noticed. */
+    body::before, body::after {
+      content:''; position:fixed; z-index:0; width:900px; height:900px;
+      clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+      pointer-events:none;
+    }
+    body::before { top:-260px; left:-320px; background:rgba(232,223,200,0.035); }
+    body::after  { bottom:-300px; right:-280px; background:rgba(74,144,217,0.05); }
+
+    #landing-wrap {
+      display:flex; align-items:center; justify-content:center; gap:32px;
+      max-width:920px; width:100%; padding:20px; position:relative; z-index:1;
+    }
+    #landing-preview { flex:0 0 320px; display:flex; justify-content:center; }
+    #landing-preview img {
+      width:100%; max-width:320px; border-radius:16px;
+      border:1px solid rgba(255,255,255,0.08); box-shadow:0 20px 50px rgba(0,0,0,0.5);
+    }
+    @media (max-width: 820px) {
+      #landing-wrap { flex-direction:column; }
+      #landing-preview { flex:none; width:min(320px, 80vw); }
+    }
+
     .card {
       background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1);
       border-radius:20px; padding:40px 48px 36px; width:min(440px, 92vw);
@@ -1179,60 +1231,74 @@ LANDING_HTML = r'''<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <form method="POST" action="/new" id="form">
-    <input type="hidden" name="ai" id="ai_hidden" value="0">
-    <div class="card">
-      <h1>HEX CHESS</h1>
-      <p class="subtitle">a Loridanshof original</p>
+  <div id="landing-wrap">
+    <div id="landing-preview">
+      <img src="{{ preview_url }}" alt="A hex chess board">
+    </div>
+    <form method="POST" action="/new" id="form">
+      <input type="hidden" name="ai" id="ai_hidden" value="0">
+      <div class="card">
+        <h1>HEX CHESS</h1>
+        <p class="subtitle">a Loridanshof original</p>
 
-      <div class="mode-row">
-        <div class="mode-btn active" id="btn-multi" onclick="setMode(0)">
-          <span class="icon">👥</span>
-          <span class="name">2 PLAYERS</span>
-          <span class="desc">Share the link<br>with a friend</span>
+        <div class="mode-row">
+          <div class="mode-btn active" id="btn-multi" onclick="setMode(0)">
+            <span class="icon">👥</span>
+            <span class="name">2 PLAYERS</span>
+            <span class="desc">Share the link<br>with a friend</span>
+          </div>
+          <div class="mode-btn" id="btn-ai" onclick="setMode(1)">
+            <span class="icon">🤖</span>
+            <span class="name">VS AI</span>
+            <span class="desc">You play White<br>AI plays Black</span>
+          </div>
         </div>
-        <div class="mode-btn" id="btn-ai" onclick="setMode(1)">
-          <span class="icon">🤖</span>
-          <span class="name">VS AI</span>
-          <span class="desc">You play White<br>AI plays Black</span>
-        </div>
-      </div>
 
-      <div id="ai-fields" style="display:none;">
         <div class="field">
-          <label for="difficulty">AI DIFFICULTY</label>
-          <select name="difficulty" id="difficulty">
-            <option value="easy">Plays randomly</option>
-            <option value="medium" selected>Greedy, prefers captures</option>
-            <option value="hard">Searches several moves ahead</option>
+          <label for="theme">BOARD THEME</label>
+          <select name="theme" id="theme">
+            <option value="classic" selected>Classic — tan &amp; brown</option>
+            <option value="ocean">Ocean — blue &amp; gray</option>
+            <option value="forest">Forest — green</option>
           </select>
         </div>
-      </div>
 
-      <div class="field">
-        <label for="time_limit">TIME PER PLAYER</label>
-        <select name="time_limit" id="time_limit">
-          <option value="60">1 minute</option>
-          <option value="180">3 minutes</option>
-          <option value="300" selected>5 minutes</option>
-          <option value="600">10 minutes</option>
-          <option value="0">No limit</option>
-        </select>
-      </div>
+        <div id="ai-fields" style="display:none;">
+          <div class="field">
+            <label for="difficulty">AI DIFFICULTY</label>
+            <select name="difficulty" id="difficulty">
+              <option value="easy">Plays randomly</option>
+              <option value="medium" selected>Greedy, prefers captures</option>
+              <option value="hard">Searches several moves ahead</option>
+            </select>
+          </div>
+        </div>
 
-      <div class="field">
-        <label for="increment">INCREMENT (BONUS PER MOVE)</label>
-        <select name="increment" id="increment">
-          <option value="0" selected>None</option>
-          <option value="2">+2 seconds</option>
-          <option value="5">+5 seconds</option>
-          <option value="10">+10 seconds</option>
-        </select>
-      </div>
+        <div class="field">
+          <label for="time_limit">TIME PER PLAYER</label>
+          <select name="time_limit" id="time_limit">
+            <option value="60">1 minute</option>
+            <option value="180">3 minutes</option>
+            <option value="300" selected>5 minutes</option>
+            <option value="600">10 minutes</option>
+            <option value="0">No limit</option>
+          </select>
+        </div>
 
-      <button type="submit" class="create-btn">CREATE GAME</button>
-    </div>
-  </form>
+        <div class="field">
+          <label for="increment">INCREMENT (BONUS PER MOVE)</label>
+          <select name="increment" id="increment">
+            <option value="0" selected>None</option>
+            <option value="2">+2 seconds</option>
+            <option value="5">+5 seconds</option>
+            <option value="10">+10 seconds</option>
+          </select>
+        </div>
+
+        <button type="submit" class="create-btn">CREATE GAME</button>
+      </div>
+    </form>
+  </div>
   <script>
     function setMode(ai) {
       document.getElementById('ai_hidden').value = ai ? '1' : '0';
@@ -1280,7 +1346,7 @@ GAME_HTML = r'''<!DOCTYPE html>
     #copy-btn:hover { background:#3a80c8; }
     .icon-btn { padding:6px 12px; background:rgba(255,255,255,0.08); color:#cdd8e5;
                 border:1px solid rgba(255,255,255,0.16); border-radius:6px; cursor:pointer;
-                font-size:0.78rem; transition:background 0.18s, border-color 0.18s; }
+                font-size:0.78rem; transition:background 0.18s, border-color 0.18s, transform 0.12s; }
     .icon-btn:hover  { background:rgba(255,255,255,0.18); }
     .icon-btn.active { background:rgba(74,144,217,0.35); border-color:#4a90d9; color:#fff; }
     #ai-badge { color:#6aacda; font-size:0.78rem; letter-spacing:1px; margin-bottom:6px; }
@@ -1308,7 +1374,8 @@ GAME_HTML = r'''<!DOCTYPE html>
                     scrollbar-width:thin; scrollbar-color:#334 transparent; }
     #history-list::-webkit-scrollbar { width:4px; }
     #history-list::-webkit-scrollbar-thumb { background:#334; border-radius:2px; }
-    .move-pair { padding:3px 14px; }
+    @keyframes moveRowIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
+    .move-pair { padding:3px 14px; animation:moveRowIn 0.25s ease; }
     .move-pair:nth-child(even) { background:rgba(255,255,255,0.02); }
     .pair-num { font-size:0.68rem; color:#3a4858; margin-bottom:1px; }
     .move-entry { display:flex; align-items:center; gap:5px; padding:2px 0; font-size:0.8rem; }
@@ -1332,7 +1399,7 @@ GAME_HTML = r'''<!DOCTYPE html>
                   margin-top:10px; flex-wrap:wrap; }
     #bottom-row button { padding:9px 22px; border-radius:8px; font-size:0.88rem;
                  cursor:pointer; letter-spacing:0.5px; font-weight:600;
-                 transition:background 0.18s, border-color 0.18s, opacity 0.18s; }
+                 transition:background 0.18s, border-color 0.18s, opacity 0.18s, transform 0.12s; }
     #bottom-row button:disabled { opacity:0.4; cursor:default; }
 
     /* Offer Draw: the one "positive/social" committal action — solid fill
@@ -1350,13 +1417,19 @@ GAME_HTML = r'''<!DOCTYPE html>
                  border:1px solid rgba(200,90,90,0.5); }
     #resign-btn:hover { background:rgba(200,60,60,0.22); color:#ffb8b8; }
 
-    #promo-overlay, #choice-overlay { display:none; position:fixed; inset:0;
+    #promo-overlay, #choice-overlay { display:flex; position:fixed; inset:0;
                      background:rgba(0,0,0,0.78); z-index:100;
-                     align-items:center; justify-content:center; }
-    #promo-overlay.active, #choice-overlay.active { display:flex; }
+                     align-items:center; justify-content:center;
+                     opacity:0; visibility:hidden; pointer-events:none;
+                     transition: opacity 0.2s ease, visibility 0s linear 0.2s; }
+    #promo-overlay.active, #choice-overlay.active {
+                     opacity:1; visibility:visible; pointer-events:auto;
+                     transition: opacity 0.2s ease, visibility 0s linear 0s; }
     #promo-box, #choice-box { background:#1a2338; border:2px solid #3a70b8; border-radius:16px;
                  padding:30px 38px; text-align:center; color:#eee;
-                 box-shadow:0 20px 60px rgba(0,0,0,0.6); max-width:92vw; }
+                 box-shadow:0 20px 60px rgba(0,0,0,0.6); max-width:92vw;
+                 transform:scale(0.94); transition:transform 0.2s ease; }
+    #promo-overlay.active #promo-box, #choice-overlay.active #choice-box { transform:scale(1); }
     #promo-box h2, #choice-box h2 { font-size:1.2rem; letter-spacing:3px; margin-bottom:6px; }
     #promo-box p, #choice-box p  { color:#7a90a8; margin-bottom:22px; font-size:0.88rem; }
     .promo-btn { padding:12px 20px; margin:0 6px; font-size:1.7rem;
@@ -1375,17 +1448,31 @@ GAME_HTML = r'''<!DOCTYPE html>
                  cursor:pointer; }
     .choice-cancel:hover { color:#cdd; }
 
-    #draw-banner { display:none; align-items:center; gap:10px; justify-content:center;
+    #draw-banner { display:flex; align-items:center; gap:10px; justify-content:center;
                    background:rgba(58,112,184,0.18); border:1px solid rgba(74,144,217,0.5);
-                   border-radius:8px; padding:8px 16px; margin-bottom:10px; color:#dce8f5;
-                   font-size:0.85rem; flex-wrap:wrap; }
-    #draw-banner.active { display:flex; }
+                   border-radius:8px; color:#dce8f5; font-size:0.85rem; flex-wrap:wrap;
+                   opacity:0; visibility:hidden; pointer-events:none;
+                   max-height:0; padding:0 16px; margin-bottom:0; overflow:hidden;
+                   transition: opacity 0.2s ease, max-height 0.25s ease,
+                               padding 0.25s ease, margin-bottom 0.25s ease,
+                               visibility 0s linear 0.25s; }
+    #draw-banner.active { opacity:1; visibility:visible; pointer-events:auto;
+                   max-height:60px; padding:8px 16px; margin-bottom:10px;
+                   transition: opacity 0.2s ease, max-height 0.25s ease,
+                               padding 0.25s ease, margin-bottom 0.25s ease,
+                               visibility 0s linear 0s; }
     .draw-accept, .draw-decline { padding:5px 14px; border:none; border-radius:6px;
                    font-size:0.78rem; cursor:pointer; color:#fff; }
+    .draw-accept, .draw-decline { transition:background 0.18s, transform 0.12s; }
     .draw-accept { background:#2a8a4a; }
     .draw-accept:hover { background:#34a458; }
     .draw-decline { background:#8a2a2a; }
     .draw-decline:hover { background:#a43434; }
+
+    /* Small tactile press feedback across the main interactive buttons
+       (.choice-btn/.promo-btn already transition "all", which covers this). */
+    #bottom-row button:active, .icon-btn:active, .choice-btn:active,
+    .promo-btn:active, .draw-accept:active, .draw-decline:active { transform:scale(0.96); }
   </style>
 </head>
 <body>
