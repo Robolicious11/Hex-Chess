@@ -30,6 +30,8 @@ hex adaptation instead of the familiar orthogonal L-shape.
 - A favicon and Open Graph/Twitter preview image, so the shared game link looks right
   when pasted into chat apps.
 - A choice of board color themes (classic, ocean, forest), picked when creating a game.
+- A light/dark toggle for the site itself (separate from board themes), saved locally
+  in your browser.
 
 ## Two ways to play
 

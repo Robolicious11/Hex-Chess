@@ -67,6 +67,7 @@ surface     = pygame.Surface((WIDTH, HEIGHT))
 label_font  = pygame.font.Font(FONT_PATH, 10)
 _pfcache    = {}
 _hex_overlay_cache = {}
+_panel_glow_cache  = {}
 render_lock = threading.Lock()
 rooms       = {}
 rooms_lock  = threading.Lock()
@@ -592,6 +593,22 @@ def get_hex_overlay(size, color, alpha=130):
     return cached
 
 
+def get_panel_glow(w, h, color):
+    """Cached soft glow behind the game-over panel: pygame has no real blur,
+    so a few nested rounded rects with increasing alpha toward the center
+    approximate one cheaply."""
+    key = (w, h, color)
+    cached = _panel_glow_cache.get(key)
+    if cached is None:
+        pad = 36
+        cached = pygame.Surface((w + pad * 2, h + pad * 2), pygame.SRCALPHA)
+        for inset, alpha in ((pad, 16), (pad * 2 // 3, 28), (pad // 3, 42)):
+            rect = (inset, inset, w + pad * 2 - inset * 2, h + pad * 2 - inset * 2)
+            pygame.draw.rect(cached, (*color, alpha), rect, border_radius=24)
+        _panel_glow_cache[key] = cached
+    return cached
+
+
 def draw_piece(sym, fg, ol, font, cx, cy):
     shadow = font.render(sym, True, (0, 0, 0))
     shadow.set_alpha(80)
@@ -699,28 +716,42 @@ def render_room(room, flip=False):
         ov = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 170))
         surface.blit(ov, (0, 0))
-        big = pygame.font.Font(FONT_PATH, 38)
-        sub = pygame.font.Font(FONT_PATH, 19)
+
         win_reason = room.get("win_reason")
         if winner == "draw" and win_reason == "draw":
-            title = big.render("Draw — repetition / 50-move rule", True, (200, 200, 255))
+            title_text, accent = "Draw — repetition / 50-move rule", (200, 200, 255)
         elif winner == "draw" and win_reason == "agreement":
-            title = big.render("Draw by agreement", True, (200, 200, 255))
+            title_text, accent = "Draw by agreement", (200, 200, 255)
         elif winner == "draw":
-            title = big.render("Stalemate — Draw!", True, (200, 200, 255))
+            title_text, accent = "Stalemate — Draw!", (200, 200, 255)
         elif win_reason == "timeout":
             loser = "black" if winner == "white" else "white"
-            sym   = "♔" if winner == "white" else "♚"
-            title = big.render(f"{sym}  {loser.capitalize()} ran out of time!", True, (255, 218, 48))
+            title_text, accent = f"{loser.capitalize()} ran out of time!", (255, 218, 48)
         elif win_reason == "resignation":
-            sym   = "♔" if winner == "white" else "♚"
-            title = big.render(f"{sym}  {winner.capitalize()} wins by resignation!", True, (255, 218, 48))
+            title_text, accent = f"{winner.capitalize()} wins by resignation!", (255, 218, 48)
         else:
-            sym   = "♔" if winner == "white" else "♚"
-            title = big.render(f"{sym}  {winner.capitalize()} wins by checkmate!", True, (255, 218, 48))
-        hint = sub.render("Press Reset Game to play again", True, (195, 195, 195))
-        surface.blit(title, title.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 28)))
-        surface.blit(hint,  hint.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 28)))
+            title_text, accent = f"{winner.capitalize()} wins by checkmate!", (255, 218, 48)
+        glyph = "♔  ♚" if winner == "draw" else ("♔" if winner == "white" else "♚")
+
+        panel_w, panel_h = 460, 190
+        panel_x, panel_y = (WIDTH - panel_w) // 2, HEIGHT // 2 - panel_h // 2
+
+        glow = get_panel_glow(panel_w, panel_h, accent)
+        surface.blit(glow, glow.get_rect(center=(WIDTH // 2, HEIGHT // 2)))
+        pygame.draw.rect(surface, (24, 27, 38), (panel_x, panel_y, panel_w, panel_h), border_radius=18)
+        pygame.draw.rect(surface, accent, (panel_x, panel_y, panel_w, panel_h), 2, border_radius=18)
+
+        glyph_font = pygame.font.Font(FONT_PATH, 60)
+        big = pygame.font.Font(FONT_PATH, 25)
+        sub = pygame.font.Font(FONT_PATH, 15)
+
+        glyph_surf = glyph_font.render(glyph, True, accent)
+        title = big.render(title_text, True, (240, 240, 245))
+        hint  = sub.render("Press Reset Game to play again", True, (170, 170, 178))
+
+        surface.blit(glyph_surf, glyph_surf.get_rect(center=(WIDTH // 2, panel_y + 52)))
+        surface.blit(title, title.get_rect(center=(WIDTH // 2, panel_y + 122)))
+        surface.blit(hint,  hint.get_rect(center=(WIDTH // 2, panel_y + 160)))
     else:
         in_check = game.is_in_check(game.turn)
         bg  = (168, 26, 26) if in_check else ((238, 235, 228) if game.turn == "white" else (26, 26, 26))
@@ -1142,10 +1173,48 @@ LANDING_HTML = r'''<!DOCTYPE html>
   <meta name="twitter:image" content="{{ preview_url }}">
   <style>
     *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+    :root {
+      --bg-1:#1e2540; --bg-2:#0f1220;
+      --text:#eee; --text-dim:#7a8090; --text-faint:#6a7080;
+      --surface:rgba(255,255,255,0.04); --surface-border:rgba(255,255,255,0.1);
+      --surface-hover-border:rgba(255,255,255,0.3); --surface-hover-text:#ddd;
+      --field-bg:rgba(255,255,255,0.06); --field-border:rgba(255,255,255,0.14);
+      --field-option-bg:#1a2030;
+      --mode-border:rgba(255,255,255,0.12); --mode-bg:rgba(255,255,255,0.04);
+      --mode-color:#aaa; --mode-desc:#666;
+      --accent:#3a70b8; --accent-bright:#4a90d9;
+      --accent-soft-bg:rgba(74,144,217,0.18); --accent-soft-text:#89b8e8;
+      --ai-note-bg:rgba(74,144,217,0.1); --ai-note-text:#6a9fc8;
+      --title-grad-1:#e8dfc8; --title-grad-2:#a89060;
+      --btn-grad-1:#3a80c8; --btn-grad-2:#2060a8;
+      --btn-hover-grad-1:#4a90d8; --btn-hover-grad-2:#3070b8;
+      --hex-glow-1:rgba(232,223,200,0.035); --hex-glow-2:rgba(74,144,217,0.05);
+      --preview-border:rgba(255,255,255,0.08);
+      --icon-btn-bg:rgba(255,255,255,0.08); --icon-btn-border:rgba(255,255,255,0.16);
+    }
+    :root[data-theme="light"] {
+      --bg-1:#eef1f7; --bg-2:#dde3ee;
+      --text:#1c2430; --text-dim:#5c6675; --text-faint:#6b7686;
+      --surface:rgba(20,30,50,0.035); --surface-border:rgba(20,30,50,0.12);
+      --surface-hover-border:rgba(20,30,50,0.28); --surface-hover-text:#222;
+      --field-bg:rgba(20,30,50,0.045); --field-border:rgba(20,30,50,0.16);
+      --field-option-bg:#eef1f7;
+      --mode-border:rgba(20,30,50,0.14); --mode-bg:rgba(20,30,50,0.03);
+      --mode-color:#556; --mode-desc:#7a8494;
+      --accent:#2f5f9e; --accent-bright:#3a7bc8;
+      --accent-soft-bg:rgba(58,123,200,0.16); --accent-soft-text:#1f4a80;
+      --ai-note-bg:rgba(58,123,200,0.1); --ai-note-text:#2f5f9e;
+      --title-grad-1:#6b5220; --title-grad-2:#3d2e10;
+      --btn-grad-1:#3a80c8; --btn-grad-2:#2060a8;
+      --btn-hover-grad-1:#4a90d8; --btn-hover-grad-2:#3070b8;
+      --hex-glow-1:rgba(60,50,20,0.03); --hex-glow-2:rgba(58,123,200,0.06);
+      --preview-border:rgba(20,30,50,0.1);
+      --icon-btn-bg:rgba(20,30,50,0.05); --icon-btn-border:rgba(20,30,50,0.18);
+    }
     body {
-      background: radial-gradient(ellipse at 50% 30%, #1e2540 0%, #0f1220 100%);
+      background: radial-gradient(ellipse at 50% 30%, var(--bg-1) 0%, var(--bg-2) 100%);
       display:flex; flex-direction:column; align-items:center; justify-content:center;
-      min-height:100vh; font-family:'Segoe UI', system-ui, sans-serif; color:#eee;
+      min-height:100vh; font-family:'Segoe UI', system-ui, sans-serif; color:var(--text);
       position:relative; overflow-x:hidden;
     }
     /* Two large, very faint hex silhouettes peeking from opposite corners —
@@ -1155,8 +1224,14 @@ LANDING_HTML = r'''<!DOCTYPE html>
       clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
       pointer-events:none;
     }
-    body::before { top:-260px; left:-320px; background:rgba(232,223,200,0.035); }
-    body::after  { bottom:-300px; right:-280px; background:rgba(74,144,217,0.05); }
+    body::before { top:-260px; left:-320px; background:var(--hex-glow-1); }
+    body::after  { bottom:-300px; right:-280px; background:var(--hex-glow-2); }
+
+    #theme-toggle { position:fixed; top:16px; right:16px; z-index:2;
+      padding:7px 11px; background:var(--icon-btn-bg); color:var(--text);
+      border:1px solid var(--icon-btn-border); border-radius:6px; cursor:pointer;
+      font-size:0.9rem; transition:background 0.18s, border-color 0.18s; }
+    #theme-toggle:hover { background:var(--surface-hover-border); }
 
     #landing-wrap {
       display:flex; align-items:center; justify-content:center; gap:32px;
@@ -1165,7 +1240,7 @@ LANDING_HTML = r'''<!DOCTYPE html>
     #landing-preview { flex:0 0 320px; display:flex; justify-content:center; }
     #landing-preview img {
       width:100%; max-width:320px; border-radius:16px;
-      border:1px solid rgba(255,255,255,0.08); box-shadow:0 20px 50px rgba(0,0,0,0.5);
+      border:1px solid var(--preview-border); box-shadow:0 20px 50px rgba(0,0,0,0.5);
     }
     @media (max-width: 820px) {
       #landing-wrap { flex-direction:column; }
@@ -1173,64 +1248,71 @@ LANDING_HTML = r'''<!DOCTYPE html>
     }
 
     .card {
-      background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1);
+      background:var(--surface); border:1px solid var(--surface-border);
       border-radius:20px; padding:40px 48px 36px; width:min(440px, 92vw);
       display:flex; flex-direction:column; align-items:center;
       box-shadow:0 24px 60px rgba(0,0,0,0.5);
     }
     h1 {
       font-size:2.4rem; letter-spacing:6px;
-      background:linear-gradient(135deg, #e8dfc8 30%, #a89060 100%);
+      background:linear-gradient(135deg, var(--title-grad-1) 30%, var(--title-grad-2) 100%);
       -webkit-background-clip:text; -webkit-text-fill-color:transparent;
       margin-bottom:6px;
     }
-    .subtitle { color:#7a8090; font-size:0.88rem; margin-bottom:28px; letter-spacing:0.5px; }
+    .subtitle { color:var(--text-dim); font-size:0.88rem; margin-bottom:28px; letter-spacing:0.5px; }
 
     .mode-row { display:flex; gap:12px; width:100%; margin-bottom:20px; }
     .mode-btn {
-      flex:1; padding:16px 10px; border:2px solid rgba(255,255,255,0.12);
-      background:rgba(255,255,255,0.04); border-radius:12px; color:#aaa;
+      flex:1; padding:16px 10px; border:2px solid var(--mode-border);
+      background:var(--mode-bg); border-radius:12px; color:var(--mode-color);
       cursor:pointer; transition:all 0.18s; text-align:center; user-select:none;
     }
     .mode-btn .icon { font-size:1.8rem; display:block; margin-bottom:6px; }
     .mode-btn .name { font-size:0.82rem; font-weight:700; letter-spacing:1.5px; display:block; }
-    .mode-btn .desc { font-size:0.72rem; color:#666; margin-top:4px; display:block; }
-    .mode-btn:hover  { border-color:rgba(255,255,255,0.3); color:#ddd; }
-    .mode-btn.active { border-color:#4a90d9; background:rgba(74,144,217,0.18); color:#fff; }
-    .mode-btn.active .desc { color:#89b8e8; }
+    .mode-btn .desc { font-size:0.72rem; color:var(--mode-desc); margin-top:4px; display:block; }
+    .mode-btn:hover  { border-color:var(--surface-hover-border); color:var(--surface-hover-text); }
+    .mode-btn.active { border-color:var(--accent-bright); background:var(--accent-soft-bg); color:var(--text); }
+    .mode-btn.active .desc { color:var(--accent-soft-text); }
 
     .field { width:100%; margin-bottom:18px; }
     .field label { display:block; font-size:0.75rem; letter-spacing:1.5px;
-                   color:#6a7080; margin-bottom:8px; }
+                   color:var(--text-faint); margin-bottom:8px; }
     .field select {
-      width:100%; padding:11px 14px; background:rgba(255,255,255,0.06);
-      color:#eee; border:1px solid rgba(255,255,255,0.14); border-radius:8px;
+      width:100%; padding:11px 14px; background:var(--field-bg);
+      color:var(--text); border:1px solid var(--field-border); border-radius:8px;
       font-size:0.95rem; cursor:pointer; outline:none; appearance:none;
       background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23888' d='M6 8L0 0h12z'/%3E%3C/svg%3E");
       background-repeat:no-repeat; background-position:right 14px center;
     }
-    .field select option { background:#1a2030; }
+    .field select option { background:var(--field-option-bg); color:var(--text); }
 
     #ai-fields { width:100%; }
     .ai-note {
-      font-size:0.78rem; color:#6a9fc8; margin-bottom:18px; width:100%;
-      padding:8px 12px; background:rgba(74,144,217,0.1);
-      border-radius:6px; border-left:3px solid #4a90d9;
+      font-size:0.78rem; color:var(--ai-note-text); margin-bottom:18px; width:100%;
+      padding:8px 12px; background:var(--ai-note-bg);
+      border-radius:6px; border-left:3px solid var(--accent-bright);
     }
 
     .create-btn {
       width:100%; padding:14px; font-size:1rem; font-weight:700; letter-spacing:2px;
-      background:linear-gradient(135deg,#3a80c8,#2060a8); color:#fff; border:none;
+      background:linear-gradient(135deg,var(--btn-grad-1),var(--btn-grad-2)); color:#fff; border:none;
       border-radius:10px; cursor:pointer; transition:all 0.18s;
       box-shadow:0 4px 18px rgba(42,100,180,0.45);
     }
     .create-btn:hover {
-      background:linear-gradient(135deg,#4a90d8,#3070b8);
+      background:linear-gradient(135deg,var(--btn-hover-grad-1),var(--btn-hover-grad-2));
       box-shadow:0 6px 24px rgba(42,100,180,0.6); transform:translateY(-1px);
     }
   </style>
+  <script>
+    (function() {
+      var saved = localStorage.getItem('hexchess_theme');
+      if (saved === 'light') document.documentElement.dataset.theme = 'light';
+    })();
+  </script>
 </head>
 <body>
+  <button id="theme-toggle" title="Toggle light/dark theme">🌙</button>
   <div id="landing-wrap">
     <div id="landing-preview">
       <img src="{{ preview_url }}" alt="A hex chess board">
@@ -1306,6 +1388,19 @@ LANDING_HTML = r'''<!DOCTYPE html>
       document.getElementById('btn-ai').classList.toggle('active',  !!ai);
       document.getElementById('ai-fields').style.display = ai ? '' : 'none';
     }
+
+    const themeToggle = document.getElementById('theme-toggle');
+    function updateThemeToggle() {
+      themeToggle.textContent = document.documentElement.dataset.theme === 'light' ? '☀️' : '🌙';
+    }
+    updateThemeToggle();
+    themeToggle.addEventListener('click', () => {
+      const isLight = document.documentElement.dataset.theme === 'light';
+      if (isLight) delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = 'light';
+      localStorage.setItem('hexchess_theme', isLight ? 'dark' : 'light');
+      updateThemeToggle();
+    });
   </script>
 </body>
 </html>'''
@@ -1329,38 +1424,107 @@ GAME_HTML = r'''<!DOCTYPE html>
   <meta name="twitter:image" content="{{ preview_url }}">
   <style>
     *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+    :root {
+      --bg-1:#1e2540; --bg-2:#0f1220;
+      --text:#eee; --text-dim:#90a0b0; --text-faint:#5a6878; --text-faint2:#3a4858;
+      --heading:#e0d8c8;
+      --surface:rgba(255,255,255,0.04); --surface-border:rgba(255,255,255,0.09);
+      --surface-border-soft:rgba(255,255,255,0.07);
+      --history-alt:rgba(255,255,255,0.02);
+      --scrollbar:#334;
+      --icon-btn-bg:rgba(255,255,255,0.08); --icon-btn-border:rgba(255,255,255,0.16);
+      --icon-btn-hover-bg:rgba(255,255,255,0.18);
+      --ghost-bg:rgba(255,255,255,0.06); --ghost-border:rgba(255,255,255,0.18);
+      --ghost-hover-bg:rgba(255,255,255,0.14); --ghost-text:#dde3ea;
+      --accent:#3a70b8; --accent-bright:#4a90d9; --accent-hover:#4a84d0;
+      --accent-soft-bg:rgba(74,144,217,0.35);
+      --share-url-bg:rgba(255,255,255,0.06); --share-url-text:#8ac0e0;
+      --share-url-border:rgba(74,144,217,0.4);
+      --ai-badge-text:#6aacda; --ai-badge-bg:rgba(106,172,218,0.1); --ai-badge-border:rgba(106,172,218,0.3);
+      --board-shadow-ring:rgba(255,255,255,0.07);
+      --white-entry:#e0d8c8; --black-entry:#9098a8;
+      --capture-dot:#c05050;
+      --promo-badge-text:#d4a020; --promo-badge-bg:rgba(212,160,32,0.15);
+      --capture-diff:#5aa86a;
+      --resign-text:#e8a0a0; --resign-border:rgba(200,90,90,0.5);
+      --resign-bg:rgba(200,60,60,0.08); --resign-hover-bg:rgba(200,60,60,0.22); --resign-hover-text:#ffb8b8;
+      --dialog-bg:#1a2338; --dialog-text-dim:#7a90a8;
+      --choice-cancel-text:#8a96a8; --choice-cancel-border:#445; --choice-cancel-hover:#cdd;
+      --promo-label:#89aacf;
+      --draw-banner-bg:rgba(58,112,184,0.18); --draw-banner-border:rgba(74,144,217,0.5); --draw-banner-text:#dce8f5;
+    }
+    :root[data-theme="light"] {
+      --bg-1:#eef1f7; --bg-2:#dde3ee;
+      --text:#1c2430; --text-dim:#54606e; --text-faint:#6b7686; --text-faint2:#8892a0;
+      --heading:#3a3020;
+      --surface:rgba(20,30,50,0.035); --surface-border:rgba(20,30,50,0.12);
+      --surface-border-soft:rgba(20,30,50,0.09);
+      --history-alt:rgba(20,30,50,0.025);
+      --scrollbar:#b7c0cc;
+      --icon-btn-bg:rgba(20,30,50,0.05); --icon-btn-border:rgba(20,30,50,0.18);
+      --icon-btn-hover-bg:rgba(20,30,50,0.1);
+      --ghost-bg:rgba(20,30,50,0.05); --ghost-border:rgba(20,30,50,0.2);
+      --ghost-hover-bg:rgba(20,30,50,0.1); --ghost-text:#20303f;
+      --accent:#2f5f9e; --accent-bright:#3a7bc8; --accent-hover:#3a70b8;
+      --accent-soft-bg:rgba(58,123,200,0.28);
+      --share-url-bg:rgba(20,30,50,0.05); --share-url-text:#2f5f9e;
+      --share-url-border:rgba(58,123,200,0.4);
+      --ai-badge-text:#2f5f9e; --ai-badge-bg:rgba(58,123,200,0.1); --ai-badge-border:rgba(58,123,200,0.3);
+      --board-shadow-ring:rgba(20,30,50,0.1);
+      --white-entry:#6b5a30; --black-entry:#3a4452;
+      --capture-dot:#a83a3a;
+      --promo-badge-text:#8a640f; --promo-badge-bg:rgba(180,130,20,0.15);
+      --capture-diff:#2f7a4a;
+      --resign-text:#a83a3a; --resign-border:rgba(168,50,50,0.4);
+      --resign-bg:rgba(168,50,50,0.06); --resign-hover-bg:rgba(168,50,50,0.14); --resign-hover-text:#8a2020;
+      --dialog-bg:#ffffff; --dialog-text-dim:#5a6f82;
+      --choice-cancel-text:#6a7686; --choice-cancel-border:#c2c8d0; --choice-cancel-hover:#2c3644;
+      --promo-label:#3f6a8a;
+      --draw-banner-bg:rgba(58,123,200,0.12); --draw-banner-border:rgba(58,123,200,0.4); --draw-banner-text:#1c3550;
+    }
     body {
-      background:radial-gradient(ellipse at 50% 30%, #1e2540 0%, #0f1220 100%);
+      background:radial-gradient(ellipse at 50% 30%, var(--bg-1) 0%, var(--bg-2) 100%);
       display:flex; flex-direction:column; align-items:center; justify-content:center;
       min-height:100vh; padding:16px; font-family:'Segoe UI', system-ui, sans-serif;
+      color:var(--text);
     }
-    h1 { color:#e0d8c8; font-size:1.25rem; letter-spacing:4px; margin-bottom:8px; }
+    h1 { color:var(--heading); font-size:1.25rem; letter-spacing:4px; margin-bottom:8px; }
+
+    #theme-toggle { position:fixed; top:16px; right:16px; z-index:50;
+      padding:7px 11px; background:var(--icon-btn-bg); color:var(--text);
+      border:1px solid var(--icon-btn-border); border-radius:6px; cursor:pointer;
+      font-size:0.9rem; transition:background 0.18s, border-color 0.18s; }
+    #theme-toggle:hover { background:var(--icon-btn-hover-bg); }
+
     #share-box { display:flex; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap;
                  justify-content:center; max-width:100%; }
-    #share-url { background:rgba(255,255,255,0.06); color:#8ac0e0;
-                 border:1px solid rgba(74,144,217,0.4); border-radius:6px;
-                 padding:6px 12px; font-size:0.78rem; font-family:monospace;
+    #share-url { background:var(--share-url-bg); color:var(--share-url-text);
+                 border:1px solid var(--share-url-border); border-radius:999px;
+                 padding:7px 14px; font-size:0.78rem; font-family:monospace;
                  width:300px; max-width:60vw; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-    #copy-btn { padding:6px 14px; background:#2a70b8; color:#fff; border:none;
-                border-radius:6px; cursor:pointer; font-size:0.78rem; transition:background 0.18s; }
-    #copy-btn:hover { background:#3a80c8; }
-    .icon-btn { padding:6px 12px; background:rgba(255,255,255,0.08); color:#cdd8e5;
-                border:1px solid rgba(255,255,255,0.16); border-radius:6px; cursor:pointer;
+    #share-url::before { content:'🔗 '; }
+    #copy-btn { padding:7px 16px; background:var(--accent); color:#fff; border:none;
+                border-radius:999px; cursor:pointer; font-size:0.78rem; transition:background 0.18s; }
+    #copy-btn:hover { background:var(--accent-hover); }
+    .icon-btn { padding:6px 12px; background:var(--icon-btn-bg); color:var(--ghost-text);
+                border:1px solid var(--icon-btn-border); border-radius:6px; cursor:pointer;
                 font-size:0.78rem; transition:background 0.18s, border-color 0.18s, transform 0.12s; }
-    .icon-btn:hover  { background:rgba(255,255,255,0.18); }
-    .icon-btn.active { background:rgba(74,144,217,0.35); border-color:#4a90d9; color:#fff; }
-    #ai-badge { color:#6aacda; font-size:0.78rem; letter-spacing:1px; margin-bottom:6px; }
+    .icon-btn:hover  { background:var(--icon-btn-hover-bg); }
+    .icon-btn.active { background:var(--accent-soft-bg); border-color:var(--accent-bright); color:var(--text); }
+    #ai-badge { color:var(--ai-badge-text); font-size:0.78rem; letter-spacing:1px; margin-bottom:10px;
+                background:var(--ai-badge-bg); border:1px solid var(--ai-badge-border);
+                border-radius:999px; padding:6px 16px; display:inline-block; }
 
     #game-area { display:flex; align-items:flex-start; gap:14px; max-width:100%; }
     #game-wrap { position:relative; display:inline-block; line-height:0; }
     #game { cursor:pointer; border-radius:10px; display:block;
-            box-shadow:0 8px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.07);
+            box-shadow:0 8px 40px rgba(0,0,0,0.6), 0 0 0 1px var(--board-shadow-ring);
             max-width:100%; max-height:74vh; }
     #overlay { position:absolute; top:0; left:0; pointer-events:none; border-radius:10px; }
 
     #history-panel {
-      width:200px; min-width:200px; background:rgba(255,255,255,0.04);
-      border:1px solid rgba(255,255,255,0.09); border-radius:10px;
+      width:200px; min-width:200px; background:var(--surface);
+      border:1px solid var(--surface-border); border-radius:10px;
       display:flex; flex-direction:column; max-height:74vh; overflow:hidden;
     }
 
@@ -1369,31 +1533,31 @@ GAME_HTML = r'''<!DOCTYPE html>
       #history-panel { width:100%; min-width:0; max-height:28vh; }
     }
     #history-title { padding:10px 14px 8px; font-size:0.72rem; letter-spacing:2px;
-                     color:#5a6878; border-bottom:1px solid rgba(255,255,255,0.07); flex-shrink:0; }
+                     color:var(--text-faint); border-bottom:1px solid var(--surface-border-soft); flex-shrink:0; }
     #history-list { overflow-y:auto; flex:1; padding:6px 0;
-                    scrollbar-width:thin; scrollbar-color:#334 transparent; }
+                    scrollbar-width:thin; scrollbar-color:var(--scrollbar) transparent; }
     #history-list::-webkit-scrollbar { width:4px; }
-    #history-list::-webkit-scrollbar-thumb { background:#334; border-radius:2px; }
+    #history-list::-webkit-scrollbar-thumb { background:var(--scrollbar); border-radius:2px; }
     @keyframes moveRowIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
     .move-pair { padding:3px 14px; animation:moveRowIn 0.25s ease; }
-    .move-pair:nth-child(even) { background:rgba(255,255,255,0.02); }
-    .pair-num { font-size:0.68rem; color:#3a4858; margin-bottom:1px; }
+    .move-pair:nth-child(even) { background:var(--history-alt); }
+    .pair-num { font-size:0.68rem; color:var(--text-faint2); margin-bottom:1px; }
     .move-entry { display:flex; align-items:center; gap:5px; padding:2px 0; font-size:0.8rem; }
     .move-entry .sym { font-size:1rem; line-height:1; }
-    .move-entry .coords { color:#90a0b0; letter-spacing:0.3px; }
-    .move-entry.white-entry .sym { color:#e0d8c8; }
-    .move-entry.black-entry .sym { color:#9098a8; }
-    .capture-dot { width:5px; height:5px; border-radius:50%; background:#c05050; flex-shrink:0; }
-    .promo-badge { font-size:0.6rem; color:#d4a020; background:rgba(212,160,32,0.15);
+    .move-entry .coords { color:var(--text-dim); letter-spacing:0.3px; }
+    .move-entry.white-entry .sym { color:var(--white-entry); }
+    .move-entry.black-entry .sym { color:var(--black-entry); }
+    .capture-dot { width:5px; height:5px; border-radius:50%; background:var(--capture-dot); flex-shrink:0; }
+    .promo-badge { font-size:0.6rem; color:var(--promo-badge-text); background:var(--promo-badge-bg);
                    border-radius:3px; padding:1px 4px; }
-    .history-empty { color:#3a4858; font-size:0.78rem; text-align:center; padding:20px 14px; }
+    .history-empty { color:var(--text-faint2); font-size:0.78rem; text-align:center; padding:20px 14px; }
 
     #capture-tray { display:flex; gap:24px; justify-content:center; flex-wrap:wrap;
                     margin-top:10px; max-width:100%; }
     .capture-side { display:flex; align-items:center; gap:8px; }
-    .capture-label { font-size:0.62rem; letter-spacing:1.5px; color:#5a6878; }
-    .capture-pieces { font-size:1.05rem; letter-spacing:1px; color:#c8d0da; min-height:1.2em; }
-    .capture-diff { font-size:0.75rem; font-weight:700; color:#5aa86a; }
+    .capture-label { font-size:0.62rem; letter-spacing:1.5px; color:var(--text-faint); }
+    .capture-pieces { font-size:1.05rem; letter-spacing:1px; color:var(--text-dim); min-height:1.2em; }
+    .capture-diff { font-size:0.75rem; font-weight:700; color:var(--capture-diff); }
 
     #bottom-row { display:flex; align-items:center; justify-content:center; gap:12px;
                   margin-top:10px; flex-wrap:wrap; }
@@ -1404,18 +1568,18 @@ GAME_HTML = r'''<!DOCTYPE html>
 
     /* Offer Draw: the one "positive/social" committal action — solid fill
        using the app's existing accent blue (see promo-box/choice-btn). */
-    #draw-btn { background:#3a70b8; color:#fff; border:none; }
-    #draw-btn:hover { background:#4a84d0; }
+    #draw-btn { background:var(--accent); color:#fff; border:none; }
+    #draw-btn:hover { background:var(--accent-hover); }
 
     /* Undo / Reset: everyday utility actions — neutral outlined/ghost style. */
-    #undo-btn, #reset-btn { background:rgba(255,255,255,0.06); color:#dde3ea;
-                 border:1px solid rgba(255,255,255,0.18); }
-    #undo-btn:hover, #reset-btn:hover { background:rgba(255,255,255,0.14); }
+    #undo-btn, #reset-btn { background:var(--ghost-bg); color:var(--ghost-text);
+                 border:1px solid var(--ghost-border); }
+    #undo-btn:hover, #reset-btn:hover { background:var(--ghost-hover-bg); }
 
     /* Resign: rare, consequential — muted caution outline, not a solid block. */
-    #resign-btn { background:rgba(200,60,60,0.08); color:#e8a0a0;
-                 border:1px solid rgba(200,90,90,0.5); }
-    #resign-btn:hover { background:rgba(200,60,60,0.22); color:#ffb8b8; }
+    #resign-btn { background:var(--resign-bg); color:var(--resign-text);
+                 border:1px solid var(--resign-border); }
+    #resign-btn:hover { background:var(--resign-hover-bg); color:var(--resign-hover-text); }
 
     #promo-overlay, #choice-overlay { display:flex; position:fixed; inset:0;
                      background:rgba(0,0,0,0.78); z-index:100;
@@ -1425,32 +1589,32 @@ GAME_HTML = r'''<!DOCTYPE html>
     #promo-overlay.active, #choice-overlay.active {
                      opacity:1; visibility:visible; pointer-events:auto;
                      transition: opacity 0.2s ease, visibility 0s linear 0s; }
-    #promo-box, #choice-box { background:#1a2338; border:2px solid #3a70b8; border-radius:16px;
-                 padding:30px 38px; text-align:center; color:#eee;
+    #promo-box, #choice-box { background:var(--dialog-bg); border:2px solid var(--accent); border-radius:16px;
+                 padding:30px 38px; text-align:center; color:var(--text);
                  box-shadow:0 20px 60px rgba(0,0,0,0.6); max-width:92vw;
                  transform:scale(0.94); transition:transform 0.2s ease; }
     #promo-overlay.active #promo-box, #choice-overlay.active #choice-box { transform:scale(1); }
     #promo-box h2, #choice-box h2 { font-size:1.2rem; letter-spacing:3px; margin-bottom:6px; }
-    #promo-box p, #choice-box p  { color:#7a90a8; margin-bottom:22px; font-size:0.88rem; }
+    #promo-box p, #choice-box p  { color:var(--dialog-text-dim); margin-bottom:22px; font-size:0.88rem; }
     .promo-btn { padding:12px 20px; margin:0 6px; font-size:1.7rem;
-                 background:rgba(58,112,184,0.3); color:#fff; border:2px solid #3a70b8;
+                 background:var(--accent-soft-bg); color:#fff; border:2px solid var(--accent);
                  border-radius:10px; cursor:pointer; transition:all 0.15s; line-height:1; }
-    .promo-btn:hover { background:rgba(58,112,184,0.7); transform:scale(1.1); }
+    .promo-btn:hover { background:var(--accent-bright); transform:scale(1.1); }
     .promo-label { display:block; font-size:0.65rem; margin-top:4px;
-                   letter-spacing:1px; color:#89aacf; }
+                   letter-spacing:1px; color:var(--promo-label); }
 
     .choice-btn { padding:12px 22px; margin:6px; font-size:0.95rem; font-weight:600;
-                 background:rgba(58,112,184,0.3); color:#fff; border:2px solid #3a70b8;
+                 background:var(--accent-soft-bg); color:#fff; border:2px solid var(--accent);
                  border-radius:10px; cursor:pointer; transition:all 0.15s; }
-    .choice-btn:hover { background:rgba(58,112,184,0.7); }
+    .choice-btn:hover { background:var(--accent-bright); }
     .choice-cancel { padding:10px 18px; margin:10px 6px 0; font-size:0.82rem;
-                 background:transparent; color:#8a96a8; border:1px solid #445; border-radius:8px;
+                 background:transparent; color:var(--choice-cancel-text); border:1px solid var(--choice-cancel-border); border-radius:8px;
                  cursor:pointer; }
-    .choice-cancel:hover { color:#cdd; }
+    .choice-cancel:hover { color:var(--choice-cancel-hover); }
 
     #draw-banner { display:flex; align-items:center; gap:10px; justify-content:center;
-                   background:rgba(58,112,184,0.18); border:1px solid rgba(74,144,217,0.5);
-                   border-radius:8px; color:#dce8f5; font-size:0.85rem; flex-wrap:wrap;
+                   background:var(--draw-banner-bg); border:1px solid var(--draw-banner-border);
+                   border-radius:8px; color:var(--draw-banner-text); font-size:0.85rem; flex-wrap:wrap;
                    opacity:0; visibility:hidden; pointer-events:none;
                    max-height:0; padding:0 16px; margin-bottom:0; overflow:hidden;
                    transition: opacity 0.2s ease, max-height 0.25s ease,
@@ -1474,8 +1638,15 @@ GAME_HTML = r'''<!DOCTYPE html>
     #bottom-row button:active, .icon-btn:active, .choice-btn:active,
     .promo-btn:active, .draw-accept:active, .draw-decline:active { transform:scale(0.96); }
   </style>
+  <script>
+    (function() {
+      var saved = localStorage.getItem('hexchess_theme');
+      if (saved === 'light') document.documentElement.dataset.theme = 'light';
+    })();
+  </script>
 </head>
 <body>
+  <button id="theme-toggle" title="Toggle light/dark theme">🌙</button>
   <h1>HEX CHESS</h1>
   {% if ai_mode %}
   <div id="ai-badge">⚔ VS AI — you play White
@@ -1543,8 +1714,8 @@ GAME_HTML = r'''<!DOCTYPE html>
       <h2 id="choice-title">CHOOSE A SIDE</h2>
       <p id="choice-subtitle"></p>
       <div>
-        <button class="choice-btn" id="choice-white-btn">White</button>
-        <button class="choice-btn" id="choice-black-btn">Black</button>
+        <button class="choice-btn" id="choice-white-btn">♔ White</button>
+        <button class="choice-btn" id="choice-black-btn">♚ Black</button>
       </div>
       <div><button class="choice-cancel" id="choice-cancel-btn">Cancel</button></div>
     </div>
@@ -1553,6 +1724,20 @@ GAME_HTML = r'''<!DOCTYPE html>
   <script>
     const ROOM = "{{ room_id }}";
     const AI_MODE = {{ 'true' if ai_mode else 'false' }};
+
+    const themeToggle = document.getElementById('theme-toggle');
+    function updateThemeToggle() {
+      themeToggle.textContent = document.documentElement.dataset.theme === 'light' ? '☀️' : '🌙';
+    }
+    updateThemeToggle();
+    themeToggle.addEventListener('click', () => {
+      const isLight = document.documentElement.dataset.theme === 'light';
+      if (isLight) delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = 'light';
+      localStorage.setItem('hexchess_theme', isLight ? 'dark' : 'light');
+      updateThemeToggle();
+    });
+
     document.getElementById('share-url').textContent = window.location.href;
     document.getElementById('copy-btn').addEventListener('click', function() {
       navigator.clipboard.writeText(window.location.href).then(() => {
