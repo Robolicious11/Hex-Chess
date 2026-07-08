@@ -8,6 +8,7 @@ from my_hexchess import Game
 # --- SETTINGS ---
 ZOOM = 0.6
 DRAW_SCALE = 0.95   # nice tight fit
+FONT_PATH = "DejaVuSans.ttf"
 
 # --- HEX DRAWING ---
 def draw_hex(surface, x, y, size, color):
@@ -121,7 +122,7 @@ while running:
 
         # --- draw piece ---
         if piece:
-            piece_font = pygame.font.SysFont("dejavusans", int(hex_radius * 1.5))
+            piece_font = pygame.font.Font(FONT_PATH, int(hex_radius * 1.5))
             symbol = PIECE_SYMBOLS[piece.owner][piece.name]
             text = piece_font.render(symbol, True, (0, 0, 0))
             rect = text.get_rect(center=(x, y))

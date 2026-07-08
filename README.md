@@ -77,7 +77,9 @@ process).
 
 Because there's no persistence layer, a background thread periodically purges rooms
 that have been inactive for more than 2 hours, so the process has bounded memory growth
-under public traffic instead of accumulating abandoned rooms forever.
+under public traffic instead of accumulating abandoned rooms forever. Room creation
+(`/new`) is also rate-limited per client IP (10 per 10 minutes) to stop a rapid burst of
+requests from spiking memory faster than that cleanup sweep runs.
 
 `server.py` reads the `PORT` environment variable when run directly
 (`python server.py`); under gunicorn, the Procfile's `--bind` is what actually

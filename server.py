@@ -86,6 +86,36 @@ def get_room(room_id):
         return rooms.get(room_id)
 
 
+NEW_ROOM_RATE_LIMIT  = 10    # max room creations...
+NEW_ROOM_RATE_WINDOW = 600   # ...per this many seconds, per client IP
+
+_new_room_hits      = {}
+_new_room_hits_lock = threading.Lock()
+
+
+def _client_ip():
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def rate_limit_new_room():
+    """Returns True if this client may create another room right now, and
+    records the attempt. Guards against a rapid /new burst spiking memory
+    faster than the room reaper's sweep interval can clean it up."""
+    ip = _client_ip()
+    now = time.time()
+    with _new_room_hits_lock:
+        hits = [t for t in _new_room_hits.get(ip, []) if now - t < NEW_ROOM_RATE_WINDOW]
+        if len(hits) >= NEW_ROOM_RATE_LIMIT:
+            _new_room_hits[ip] = hits
+            return False
+        hits.append(now)
+        _new_room_hits[ip] = hits
+        return True
+
+
 def reap_inactive_rooms():
     """Background sweep that purges rooms nobody has touched in a while,
     so a publicly-reachable /new endpoint can't grow the process forever."""
@@ -103,6 +133,14 @@ def reap_inactive_rooms():
             with rooms_lock:
                 for room_id in stale_ids:
                     rooms.pop(room_id, None)
+
+        with _new_room_hits_lock:
+            for ip in list(_new_room_hits.keys()):
+                hits = [t for t in _new_room_hits[ip] if now - t < NEW_ROOM_RATE_WINDOW]
+                if hits:
+                    _new_room_hits[ip] = hits
+                else:
+                    del _new_room_hits[ip]
 
 
 threading.Thread(target=reap_inactive_rooms, daemon=True).start()
@@ -637,6 +675,9 @@ def index():
 
 @app.route('/new', methods=['POST'])
 def new_game():
+    if not rate_limit_new_room():
+        return jsonify({'ok': False, 'error': 'Too many games created recently, please wait a bit.'}), 429
+
     room_id = uuid.uuid4().hex[:10]
     try:
         time_limit = int(request.form.get('time_limit', 300))
