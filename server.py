@@ -847,8 +847,7 @@ def new_game():
     return redirect(url_for('game_page', room_id=room_id))
 
 
-@app.route('/game/<room_id>')
-def game_page(room_id):
+def _render_game_page(room_id, spectate):
     room = get_room(room_id)
     if room is None:
         return "Game not found. <a href='/'>Create a new game</a>", 404
@@ -858,7 +857,21 @@ def game_page(room_id):
                                   first_frame=first_frame,
                                   ai_mode=room.get("ai", False),
                                   ai_difficulty=room.get("ai_difficulty", "medium"),
-                                  preview_url=preview_url)
+                                  preview_url=preview_url,
+                                  spectate=spectate)
+
+
+@app.route('/game/<room_id>')
+def game_page(room_id):
+    return _render_game_page(room_id, spectate=False)
+
+
+@app.route('/watch/<room_id>')
+def watch_page(room_id):
+    """Read-only spectator view: same trust model as the rest of this
+    no-login app (the underlying routes are still reachable directly),
+    this just hides the controls and never attaches the click handler."""
+    return _render_game_page(room_id, spectate=True)
 
 
 @app.route('/frame/<room_id>')
@@ -886,6 +899,15 @@ def state(room_id):
     if room is None:
         return jsonify({'ok': False}), 404
     with room["lock"]:
+        lm = room.get("last_move")
+        last_move_json = None
+        if lm:
+            moved_piece = room["game"].board.get(lm["to"])
+            last_move_json = {
+                "from": list(lm["from"]),
+                "to":   list(lm["to"]),
+                "sym":  PIECE_SYMBOLS[moved_piece.owner][moved_piece.name] if moved_piece else None,
+            }
         return jsonify({
             'pending_promotion': room["pending_promotion"] is not None,
             'turn':              room["game"].turn,
@@ -893,6 +915,8 @@ def state(room_id):
             'last_event':        room["last_event"],
             'winner':            room["winner"] is not None,
             'draw_offered_by':   room["draw_offered_by"],
+            'last_move':         last_move_json,
+            'ai_color':          room.get("ai_color"),
         })
 
 
@@ -989,30 +1013,62 @@ def click(room_id):
     return jsonify({'ok': True, 'event': click_event})
 
 
+def _reset_game_fields(room):
+    """Reset the game itself back to a fresh starting position, leaving
+    room-level settings (time control, increment, theme, ai/difficulty)
+    untouched. Caller must already hold room["lock"]."""
+    init = room["init_time"]
+    room["game"]              = Game(size=BOARD_SIZE)
+    room["selected"]          = None
+    room["legal_moves"]       = []
+    room["winner"]            = None
+    room["win_reason"]        = None
+    room["draw_offered_by"]   = None
+    room["pending_promotion"] = None
+    room["last_move"]         = None
+    room["history"]           = []
+    room["white_time"]        = init
+    room["black_time"]        = init
+    room["clock_since"]       = time.time() if init else None
+    room["last_event"]        = None
+    room["ai_thinking"]       = False
+    room["undo_stack"]        = []
+
+
 @app.route('/reset/<room_id>', methods=['POST'])
 def reset(room_id):
     room = get_room(room_id)
     if room is None:
         return jsonify({'ok': False}), 404
     with room["lock"]:
-        room["last_activity"]     = time.time()
-        init = room["init_time"]
-        room["game"]              = Game(size=BOARD_SIZE)
-        room["selected"]          = None
-        room["legal_moves"]       = []
-        room["winner"]            = None
-        room["win_reason"]        = None
-        room["draw_offered_by"]   = None
-        room["pending_promotion"] = None
-        room["last_move"]         = None
-        room["history"]           = []
-        room["white_time"]        = init
-        room["black_time"]        = init
-        room["clock_since"]       = time.time() if init else None
-        room["last_event"]        = None
-        room["ai_thinking"]       = False
-        room["undo_stack"]        = []
-        room["event_seq"]        += 1
+        room["last_activity"] = time.time()
+        _reset_game_fields(room)
+        room["event_seq"]    += 1
+    return jsonify({'ok': True})
+
+
+@app.route('/rematch/<room_id>', methods=['POST'])
+def rematch(room_id):
+    """Reset a vs-AI room and swap which color the AI plays. 2-player rooms
+    have no color binding to swap (no player identity exists anywhere in
+    this app), so this route is AI-only; Reset Game covers the 2P case."""
+    room = get_room(room_id)
+    if room is None:
+        return jsonify({'ok': False}), 404
+    if not room["ai"]:
+        return jsonify({'ok': False, 'error': 'rematch with side-swap only applies to vs-AI games'}), 400
+
+    ai_triggered = False
+    with room["lock"]:
+        room["last_activity"] = time.time()
+        _reset_game_fields(room)
+        room["ai_color"]  = "white" if room["ai_color"] == "black" else "black"
+        room["event_seq"] += 1
+        if room["game"].turn == room["ai_color"]:
+            ai_triggered = True
+
+    if ai_triggered:
+        threading.Thread(target=trigger_ai_move, args=(room_id,), daemon=True).start()
     return jsonify({'ok': True})
 
 
@@ -1520,7 +1576,7 @@ GAME_HTML = r'''<!DOCTYPE html>
     #game { cursor:pointer; border-radius:10px; display:block;
             box-shadow:0 8px 40px rgba(0,0,0,0.6), 0 0 0 1px var(--board-shadow-ring);
             max-width:100%; max-height:74vh; }
-    #overlay { position:absolute; top:0; left:0; pointer-events:none; border-radius:10px; }
+    #overlay, #move-anim { position:absolute; top:0; left:0; pointer-events:none; border-radius:10px; }
 
     #history-panel {
       width:200px; min-width:200px; background:var(--surface);
@@ -1571,10 +1627,10 @@ GAME_HTML = r'''<!DOCTYPE html>
     #draw-btn { background:var(--accent); color:#fff; border:none; }
     #draw-btn:hover { background:var(--accent-hover); }
 
-    /* Undo / Reset: everyday utility actions — neutral outlined/ghost style. */
-    #undo-btn, #reset-btn { background:var(--ghost-bg); color:var(--ghost-text);
+    /* Undo / Reset / Rematch: everyday utility actions — neutral outlined/ghost style. */
+    #undo-btn, #reset-btn, #rematch-btn { background:var(--ghost-bg); color:var(--ghost-text);
                  border:1px solid var(--ghost-border); }
-    #undo-btn:hover, #reset-btn:hover { background:var(--ghost-hover-bg); }
+    #undo-btn:hover, #reset-btn:hover, #rematch-btn:hover { background:var(--ghost-hover-bg); }
 
     /* Resign: rare, consequential — muted caution outline, not a solid block. */
     #resign-btn { background:var(--resign-bg); color:var(--resign-text);
@@ -1649,13 +1705,16 @@ GAME_HTML = r'''<!DOCTYPE html>
   <button id="theme-toggle" title="Toggle light/dark theme">🌙</button>
   <h1>HEX CHESS</h1>
   {% if ai_mode %}
-  <div id="ai-badge">⚔ VS AI — you play White
+  <div id="ai-badge">⚔ VS AI — <span id="ai-side-text">you play White</span>
     {% if ai_difficulty == 'easy' %}· Easy{% elif ai_difficulty == 'hard' %}· Hard{% else %}· Medium{% endif %}
   </div>
   {% endif %}
   <div id="share-box">
     <span id="share-url"></span>
     <button id="copy-btn">Copy Link</button>
+    {% if not spectate %}
+    <button id="copy-watch-btn" class="icon-btn" title="Copy a watch-only link for spectators">👁 Copy Spectator Link</button>
+    {% endif %}
     <button id="flip-btn" class="icon-btn" title="Flip board">⇅ Flip</button>
     <button id="mute-btn" class="icon-btn" title="Mute sounds">🔊</button>
   </div>
@@ -1668,7 +1727,9 @@ GAME_HTML = r'''<!DOCTYPE html>
 
   <div id="game-area">
     <div id="game-wrap">
-      <img id="game" src="data:image/png;base64,{{ first_frame }}" draggable="false">
+      <img id="game" src="data:image/png;base64,{{ first_frame }}" draggable="false"
+           {% if spectate %}style="cursor:default;"{% endif %}>
+      <canvas id="move-anim"></canvas>
       <canvas id="overlay"></canvas>
     </div>
     <div id="history-panel">
@@ -1692,14 +1753,19 @@ GAME_HTML = r'''<!DOCTYPE html>
     </div>
   </div>
 
+  {% if not spectate %}
   <div id="bottom-row">
     {% if not ai_mode %}
     <button id="draw-btn">🤝 Offer Draw</button>
     {% endif %}
     <button id="undo-btn">↺ Undo</button>
     <button id="reset-btn">⟳ Reset Game</button>
+    {% if ai_mode %}
+    <button id="rematch-btn">🔄 Rematch</button>
+    {% endif %}
     <button id="resign-btn">🏳 Resign</button>
   </div>
+  {% endif %}
 
   <div id="promo-overlay">
     <div id="promo-box">
@@ -1724,6 +1790,7 @@ GAME_HTML = r'''<!DOCTYPE html>
   <script>
     const ROOM = "{{ room_id }}";
     const AI_MODE = {{ 'true' if ai_mode else 'false' }};
+    const SPECTATE = {{ 'true' if spectate else 'false' }};
 
     const themeToggle = document.getElementById('theme-toggle');
     function updateThemeToggle() {
@@ -1745,6 +1812,17 @@ GAME_HTML = r'''<!DOCTYPE html>
         setTimeout(() => this.textContent = 'Copy Link', 1500);
       });
     });
+
+    if (!SPECTATE) {
+      const copyWatchBtn = document.getElementById('copy-watch-btn');
+      copyWatchBtn.addEventListener('click', function() {
+        const watchUrl = window.location.href.replace('/game/', '/watch/');
+        navigator.clipboard.writeText(watchUrl).then(() => {
+          this.textContent = '👁 Copied!';
+          setTimeout(() => this.textContent = '👁 Copy Spectator Link', 1500);
+        });
+      });
+    }
 
     // ================================================================
     // FLIP BOARD (per-viewer only — never sent to the other player,
@@ -1825,9 +1903,11 @@ GAME_HTML = r'''<!DOCTYPE html>
     // ================================================================
     // HOVER OVERLAY
     // ================================================================
-    const img     = document.getElementById('game');
-    const overlay = document.getElementById('overlay');
-    const ctx     = overlay.getContext('2d');
+    const img       = document.getElementById('game');
+    const overlay   = document.getElementById('overlay');
+    const ctx       = overlay.getContext('2d');
+    const moveAnim  = document.getElementById('move-anim');
+    const animCtx   = moveAnim.getContext('2d');
     const ZOOM  = 0.6, BSIZE = 4, IMG_W = 700, IMG_H = 580;
 
     function hexToPixel(q, r) {
@@ -1860,7 +1940,55 @@ GAME_HTML = r'''<!DOCTYPE html>
       ctx.strokeStyle='rgba(255,255,255,0.5)';
       ctx.lineWidth=1.5; ctx.fill(); ctx.stroke();
     }
-    function syncOverlay() { const r=img.getBoundingClientRect(); overlay.width=r.width; overlay.height=r.height; }
+    function syncOverlay() {
+      const r=img.getBoundingClientRect();
+      overlay.width=r.width; overlay.height=r.height;
+      moveAnim.width=r.width; moveAnim.height=r.height;
+    }
+
+    // Per-viewer Flip rotates the board 180 degrees visually without
+    // touching the underlying board state — mirror that same negation
+    // here so the animated sprite starts/ends on the correct pixels.
+    function boardToScreen(q, r) {
+      return flipped ? hexToPixel(-q, -r) : hexToPixel(q, r);
+    }
+
+    let animFrame = null;
+    function animateMove(fromQR, toQR, sym) {
+      if (!sym) return;
+      if (animFrame) cancelAnimationFrame(animFrame);
+      const rect = img.getBoundingClientRect();
+      const sx = rect.width / IMG_W, sy = rect.height / IMG_H;
+      const start = boardToScreen(fromQR[0], fromQR[1]);
+      const end   = boardToScreen(toQR[0], toQR[1]);
+      const fontSize = Math.max(10, (start.ts * 1.5) / sy);
+      const duration = 180;
+      const t0 = performance.now();
+
+      function frame(now) {
+        const t = Math.min(1, (now - t0) / duration);
+        const ease = 1 - Math.pow(1 - t, 3);
+        const x = (start.x + (end.x - start.x) * ease) / sx;
+        const y = (start.y + (end.y - start.y) * ease) / sy;
+
+        animCtx.clearRect(0, 0, moveAnim.width, moveAnim.height);
+        animCtx.font = fontSize + 'px "Segoe UI", system-ui, sans-serif';
+        animCtx.textAlign = 'center';
+        animCtx.textBaseline = 'middle';
+        animCtx.fillStyle = 'rgba(0,0,0,0.35)';
+        animCtx.fillText(sym, x + 1.5, y + 2.5);
+        animCtx.fillStyle = '#fff';
+        animCtx.fillText(sym, x, y);
+
+        if (t < 1) {
+          animFrame = requestAnimationFrame(frame);
+        } else {
+          animCtx.clearRect(0, 0, moveAnim.width, moveAnim.height);
+          animFrame = null;
+        }
+      }
+      animFrame = requestAnimationFrame(frame);
+    }
     img.addEventListener('mousemove', function(e) {
       syncOverlay();
       const rect=img.getBoundingClientRect(), sx=IMG_W/rect.width, sy=IMG_H/rect.height;
@@ -1874,19 +2002,24 @@ GAME_HTML = r'''<!DOCTYPE html>
     // ================================================================
     // FRAME POLLING
     // ================================================================
-    let tick=0, promoActive=false;
+    let promoActive=false;
     function refresh() {
       const n=new Image();
-      n.onload=()=>{ img.src=n.src; syncOverlay(); tick++; if(tick%6===0) checkState(); setTimeout(refresh,80); };
+      n.onload=()=>{ img.src=n.src; syncOverlay(); checkState(); setTimeout(refresh,80); };
       n.onerror=()=>setTimeout(refresh,300);
       n.src='/frame/'+ROOM+'?t='+Date.now()+'&flip='+(flipped?'1':'0');
     }
     setTimeout(refresh,80);
 
     // ================================================================
-    // STATE POLLING (for AI move sounds + promotion detection)
+    // STATE POLLING (AI move sounds, promotion detection, move animation)
+    // Runs once per frame poll (~80ms) rather than on a separate slower
+    // timer, so move-slide detection lags the actual move as little as
+    // this polling architecture allows.
     // ================================================================
     let lastEventSeq = -1;
+    let lastMoveSeen = null;
+    let firstStatePoll = true;
     async function checkState() {
       try {
         const d = await (await fetch('/state/'+ROOM+'?t='+Date.now())).json();
@@ -1895,6 +2028,27 @@ GAME_HTML = r'''<!DOCTYPE html>
           playSound(d.last_event);
         }
         lastEventSeq = d.event_seq;
+
+        // Slide the piece that just moved from its old square to its new
+        // one. Keyed off last_move actually changing (not just being
+        // present) so resign/draw-agreement — which bump event_seq without
+        // moving anything — never replay a stale animation.
+        const moveKey = d.last_move ? d.last_move.from.join(',')+'>'+d.last_move.to.join(',') : null;
+        if (!firstStatePoll && moveKey && moveKey !== lastMoveSeen) {
+          animateMove(d.last_move.from, d.last_move.to, d.last_move.sym);
+        }
+        lastMoveSeen = moveKey;
+        firstStatePoll = false;
+
+        if (AI_MODE) {
+          const sideText = document.getElementById('ai-side-text');
+          if (sideText && d.ai_color) {
+            sideText.textContent = 'you play ' + (d.ai_color === 'white' ? 'Black' : 'White');
+          }
+        }
+
+        if (SPECTATE) return;  // spectators don't resolve promotions/draws/game-over
+
         // Promotion dialog
         if (d.pending_promotion && !promoActive) {
           promoActive=true;
@@ -1928,8 +2082,6 @@ GAME_HTML = r'''<!DOCTYPE html>
         }
       } catch(e) {}
     }
-    // Poll more frequently to catch AI events promptly
-    setInterval(checkState, 300);
 
     async function choosePromo(piece) {
       promoActive=false;
@@ -1954,20 +2106,29 @@ GAME_HTML = r'''<!DOCTYPE html>
       document.getElementById('choice-cancel-btn').onclick = cleanup;
     }
 
-    document.getElementById('resign-btn').addEventListener('click', () => {
-      // In vs-AI games there's only one human, always playing White, so
-      // there's no ambiguity to ask about (and the server rejects
-      // resigning as the AI's color regardless).
-      if (AI_MODE) {
-        fetch('/resign/'+ROOM, {method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({color:'white'})});
-        return;
-      }
-      askColor('RESIGN', 'Which side is resigning?', async (color) => {
-        await fetch('/resign/'+ROOM, {method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({color})});
+    if (!SPECTATE) {
+      document.getElementById('resign-btn').addEventListener('click', () => {
+        // In vs-AI games there's only one human, always playing White, so
+        // there's no ambiguity to ask about (and the server rejects
+        // resigning as the AI's color regardless).
+        if (AI_MODE) {
+          fetch('/resign/'+ROOM, {method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({color:'white'})});
+          return;
+        }
+        askColor('RESIGN', 'Which side is resigning?', async (color) => {
+          await fetch('/resign/'+ROOM, {method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({color})});
+        });
       });
-    });
+
+      const rematchBtnEl = document.getElementById('rematch-btn');
+      if (rematchBtnEl) {
+        rematchBtnEl.addEventListener('click', () => {
+          fetch('/rematch/'+ROOM, {method:'POST'});
+        });
+      }
+    }
 
     const drawBtnEl = document.getElementById('draw-btn');
     if (drawBtnEl) {
@@ -2050,37 +2211,38 @@ GAME_HTML = r'''<!DOCTYPE html>
     }
 
     // ================================================================
-    // RESET
+    // RESET / UNDO
     // ================================================================
-    document.getElementById('reset-btn').addEventListener('click',()=>{
-      promoActive=false;
-      document.getElementById('promo-overlay').classList.remove('active');
-      document.getElementById('draw-banner').classList.remove('active');
-      fetch('/reset/'+ROOM,{method:'POST'});
-    });
+    if (!SPECTATE) {
+      document.getElementById('reset-btn').addEventListener('click',()=>{
+        promoActive=false;
+        document.getElementById('promo-overlay').classList.remove('active');
+        document.getElementById('draw-banner').classList.remove('active');
+        fetch('/reset/'+ROOM,{method:'POST'});
+      });
 
-    // ================================================================
-    // UNDO
-    // ================================================================
-    document.getElementById('undo-btn').addEventListener('click',()=>{
-      fetch('/undo/'+ROOM,{method:'POST'});
-    });
+      document.getElementById('undo-btn').addEventListener('click',()=>{
+        fetch('/undo/'+ROOM,{method:'POST'});
+      });
+    }
 
     // ================================================================
     // CLICK HANDLER
     // ================================================================
-    img.addEventListener('click', async function(e) {
-      if(promoActive) return;
-      ensureAudio();  // ensure audio context created on user gesture
-      const rect=img.getBoundingClientRect();
-      const resp=await fetch('/click/'+ROOM,{
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({x:e.clientX-rect.left, y:e.clientY-rect.top,
-                             imgW:rect.width, imgH:rect.height, flip:flipped})
+    if (!SPECTATE) {
+      img.addEventListener('click', async function(e) {
+        if(promoActive) return;
+        ensureAudio();  // ensure audio context created on user gesture
+        const rect=img.getBoundingClientRect();
+        const resp=await fetch('/click/'+ROOM,{
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({x:e.clientX-rect.left, y:e.clientY-rect.top,
+                               imgW:rect.width, imgH:rect.height, flip:flipped})
+        });
+        const data=await resp.json();
+        playSound(data.event);
       });
-      const data=await resp.json();
-      playSound(data.event);
-    });
+    }
   </script>
 </body>
 </html>'''

@@ -32,6 +32,10 @@ hex adaptation instead of the familiar orthogonal L-shape.
 - A choice of board color themes (classic, ocean, forest), picked when creating a game.
 - A light/dark toggle for the site itself (separate from board themes), saved locally
   in your browser.
+- A short slide animation for the most recent move.
+- Rematch (vs-AI games only): resets the game and swaps which color the AI plays.
+- A read-only spectator link, separate from the playable game link, for people who just
+  want to watch.
 
 ## Two ways to play
 
@@ -124,6 +128,14 @@ still pending.
 Two small per-browser preferences, saved in `localStorage` (not shared with the other
 player or the server): the "⇅ Flip" button rotates the board 180° for this viewer only
 — handy for whoever is playing Black — and the 🔊/🔇 button mutes the sound effects.
+
+In vs-AI games, "🔄 Rematch" resets the game and swaps sides (you now play the color the
+AI had, and vice versa), immediately kicking off an AI move if it's now White's turn.
+"👁 Copy Spectator Link" copies a read-only `/watch/<room>` URL that shows the board and
+history but has no buttons and never sends clicks — like everything else in this app
+there's no login system, so this is a courtesy UI distinction rather than a hard
+security boundary (the underlying routes are still reachable directly, exactly as the
+resign/draw color-picker already relies on mutual trust between the two browsers).
 
 ## Testing
 

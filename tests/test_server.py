@@ -283,3 +283,67 @@ def test_frame_renders_with_each_board_theme():
         resp = client.get(f"/frame/{room_id}")
         assert resp.status_code == 200
         assert resp.data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_rematch_swaps_ai_color_and_resets_game():
+    client = make_client()
+    room_id = create_room(client, "198.51.100.18", ai="1", difficulty="easy")
+    room = server.rooms[room_id]
+    assert room["ai_color"] == "black"
+
+    # Make a move and populate the undo stack so we can confirm rematch clears it.
+    room["undo_stack"].append(server.snapshot_room_state(room))
+    server.record_move(room, "white", "pawn", (0, 0), (0, 1))
+
+    resp = client.post(f"/rematch/{room_id}")
+    assert resp.status_code == 200
+
+    room = server.rooms[room_id]
+    assert room["ai_color"] == "white"
+    assert room["history"] == []
+    assert room["undo_stack"] == []
+    assert room["winner"] is None
+
+
+def test_rematch_rejected_in_2p_room():
+    client = make_client()
+    room_id = create_room(client, "198.51.100.19")
+    resp = client.post(f"/rematch/{room_id}")
+    assert resp.status_code == 400
+
+
+def test_watch_page_omits_player_controls():
+    client = make_client()
+    room_id = create_room(client, "198.51.100.20")
+
+    watch_page = client.get(f"/watch/{room_id}").get_data(as_text=True)
+    assert watch_page.count("{") == watch_page.count("}")
+    assert 'id="resign-btn"' not in watch_page
+    assert 'id="undo-btn"' not in watch_page
+    assert 'id="reset-btn"' not in watch_page
+    assert 'id="game"' in watch_page          # board is still shown
+    assert 'id="history-panel"' in watch_page  # history is still shown
+
+    play_page = client.get(f"/game/{room_id}").get_data(as_text=True)
+    assert 'id="resign-btn"' in play_page      # normal page is unaffected
+
+
+def test_state_includes_last_move_and_ai_color():
+    client = make_client()
+    room_id = create_room(client, "198.51.100.21", ai="1", difficulty="easy")
+    room = server.rooms[room_id]
+    game = room["game"]
+
+    data = client.get(f"/state/{room_id}").get_json()
+    assert data["last_move"] is None
+    assert data["ai_color"] == "black"
+
+    src = game.from_label("C2")
+    dst = game.legal_moves(src)[0]
+    game.move(src, dst)
+    room["last_move"] = {"from": src, "to": dst}
+
+    data = client.get(f"/state/{room_id}").get_json()
+    assert data["last_move"]["from"] == list(src)
+    assert data["last_move"]["to"] == list(dst)
+    assert data["last_move"]["sym"] == "♙"  # white pawn
