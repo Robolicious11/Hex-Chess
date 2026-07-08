@@ -104,7 +104,6 @@ def make_room(time_limit=300, ai=False, ai_difficulty="medium", increment=0,
         "last_event":        None,
         "event_seq":         0,
         "lock":              threading.Lock(),
-        "created":           now,
         "last_activity":     now,
         "undo_stack":        [],
     }
@@ -1238,9 +1237,8 @@ LANDING_HTML = r'''<!DOCTYPE html>
       --field-option-bg:#1a2030;
       --mode-border:rgba(255,255,255,0.12); --mode-bg:rgba(255,255,255,0.04);
       --mode-color:#aaa; --mode-desc:#666;
-      --accent:#3a70b8; --accent-bright:#4a90d9;
+      --accent-bright:#4a90d9;
       --accent-soft-bg:rgba(74,144,217,0.18); --accent-soft-text:#89b8e8;
-      --ai-note-bg:rgba(74,144,217,0.1); --ai-note-text:#6a9fc8;
       --title-grad-1:#e8dfc8; --title-grad-2:#a89060;
       --btn-grad-1:#3a80c8; --btn-grad-2:#2060a8;
       --btn-hover-grad-1:#4a90d8; --btn-hover-grad-2:#3070b8;
@@ -1248,12 +1246,12 @@ LANDING_HTML = r'''<!DOCTYPE html>
       --preview-border:rgba(255,255,255,0.08);
       --icon-btn-bg:rgba(255,255,255,0.08); --icon-btn-border:rgba(255,255,255,0.16);
 
-      /* Spacing / radius / font-size scale — not theme-dependent, so
-         defined once here rather than repeated in the light override. */
-      --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:24px;
+      /* Spacing / radius scale — not theme-dependent, so defined once here
+         rather than repeated in the light override. Only the steps this
+         page actually uses; see GAME_HTML for the fuller scale. */
+      --space-2:8px; --space-3:12px;
       --radius-xs:6px; --radius-sm:8px; --radius-md:10px; --radius-lg:12px;
-      --radius-xl:16px; --radius-2xl:20px; --radius-pill:999px;
-      --fs-btn:0.88rem; --fs-btn-sm:0.78rem; --fs-card-title:1.2rem;
+      --radius-xl:16px; --radius-2xl:20px;
     }
     :root[data-theme="light"] {
       --bg-1:#eef1f7; --bg-2:#dde3ee;
@@ -1264,9 +1262,8 @@ LANDING_HTML = r'''<!DOCTYPE html>
       --field-option-bg:#eef1f7;
       --mode-border:rgba(20,30,50,0.14); --mode-bg:rgba(20,30,50,0.03);
       --mode-color:#556; --mode-desc:#7a8494;
-      --accent:#2f5f9e; --accent-bright:#3a7bc8;
+      --accent-bright:#3a7bc8;
       --accent-soft-bg:rgba(58,123,200,0.16); --accent-soft-text:#1f4a80;
-      --ai-note-bg:rgba(58,123,200,0.1); --ai-note-text:#2f5f9e;
       --title-grad-1:#6b5220; --title-grad-2:#3d2e10;
       --btn-grad-1:#3a80c8; --btn-grad-2:#2060a8;
       --btn-hover-grad-1:#4a90d8; --btn-hover-grad-2:#3070b8;
@@ -1359,11 +1356,6 @@ LANDING_HTML = r'''<!DOCTYPE html>
     .field select option { background:var(--field-option-bg); color:var(--text); }
 
     #ai-fields { width:100%; }
-    .ai-note {
-      font-size:0.78rem; color:var(--ai-note-text); margin-bottom:18px; width:100%;
-      padding:8px 12px; background:var(--ai-note-bg);
-      border-radius:var(--radius-xs); border-left:3px solid var(--accent-bright);
-    }
 
     .create-btn {
       width:100%; padding:14px; font-size:1rem; font-weight:700; letter-spacing:2px;
@@ -1529,9 +1521,9 @@ GAME_HTML = r'''<!DOCTYPE html>
 
       /* Spacing / radius / font-size scale — not theme-dependent, so
          defined once here rather than repeated in the light override. */
-      --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:24px;
-      --radius-xs:6px; --radius-sm:8px; --radius-md:10px; --radius-lg:12px;
-      --radius-xl:16px; --radius-2xl:20px; --radius-pill:999px;
+      --space-2:8px; --space-3:12px; --space-4:16px; --space-5:24px;
+      --radius-xs:6px; --radius-sm:8px; --radius-md:10px;
+      --radius-xl:16px; --radius-pill:999px;
       --fs-btn:0.88rem; --fs-btn-sm:0.78rem; --fs-card-title:1.2rem;
     }
     :root[data-theme="light"] {
@@ -2045,6 +2037,12 @@ GAME_HTML = r'''<!DOCTYPE html>
       syncOverlay();
       ctx.clearRect(0,0,overlay.width,overlay.height);
       if (gameOver) return;  // don't hover-highlight over the game-over panel
+      // sx/sy here are DISPLAYED/NATIVE (opposite of animateMove's convention
+      // below) — multiplying a displayed coordinate by sx converts it to
+      // native space, and dividing a native coordinate by sx converts back.
+      // Don't copy this pattern into code using the other convention without
+      // also flipping multiply<->divide — that mismatch is exactly what the
+      // move-animation coordinate bug was.
       const rect=img.getBoundingClientRect(), sx=IMG_W/rect.width, sy=IMG_H/rect.height;
       const {q,r}=pixelToHex((e.clientX-rect.left)*sx,(e.clientY-rect.top)*sy);
       if(!onBoard(q,r)) return;
